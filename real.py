@@ -5,15 +5,19 @@ import random
 from threading import Thread
 from datetime import datetime
 from telebot import types
+import pytz  
 
 # ====== НАСТРОЙКИ ======
 TOKEN = "8568812025:AAHL-u8tquSPxlBW8ZEXz2wv4oi0z8R6r3U"  # Вставьте ваш токен
 GROUP_CHAT_ID = -1003685818116 # ID вашей группы (должен начинаться с -)
 ADMIN_USERNAME = "Ravenskort"  # Username администратора
 
-# Время публикации (24-часовой формат)
-VOTING_TIME = "02:20"  # Время отправки сообщения с кнопками
-NOTIFICATION_TIME = "02:21"  # Время отправки финального сообщения "Жду на Тушинской"
+# Время публикации (24-часовой формат, указываем МСК)
+VOTING_TIME = "20:32"  # Время отправки сообщения с кнопками (по Москве)
+NOTIFICATION_TIME = "20:33"  # Время отправки финального сообщения "Жду на Тушинской" (по Москве)
+
+# Устанавливаем часовой пояс (Москва)
+MOSCOW_TZ = pytz.timezone('Europe/Moscow')
 
 # Список случайных имен для гостей
 GUEST_NAMES = [
@@ -126,8 +130,8 @@ def handle_admin_command(message, command_func, *args):
 # ====== ФУНКЦИЯ ЛОГИРОВАНИЯ ГОЛОСОВАНИЯ ======
 def log_vote(user_id, user_name, vote_type, guest_count=0):
     """Логирует информацию о голосовании"""
-    timestamp = datetime.now().strftime("%H:%M:%S")
-    log_message = f"[{timestamp}] "
+    moscow_time = datetime.now(MOSCOW_TZ).strftime("%H:%M:%S")
+    log_message = f"[{moscow_time}] "
     
     if vote_type == "yes":
         log_message += f"✅ {user_name} (ID: {user_id}) проголосовал за 'Да'"
@@ -148,13 +152,16 @@ def log_vote(user_id, user_name, vote_type, guest_count=0):
 def create_daily_voting():
     """Создает сообщение с кнопками и сообщение с результатами в группе в заданное время"""
     try:
+        # Текущее время по Москве
+        moscow_now = datetime.now(MOSCOW_TZ)
+        
         # Сбрасываем данные о предыдущем голосовании
         global current_voting
         current_voting = {
             'voting_message_id': None,
             'results_message_id': None,
             'notification_message_id': None,
-            'date': datetime.now(),
+            'date': moscow_now,
             'yes_voters': {},
             'no_voters': {},
             'plus_one_voters': {},  # Храним списки гостей для каждого пользователя
@@ -199,12 +206,11 @@ def create_daily_voting():
         # Сохраняем ID сообщения с результатами
         current_voting['results_message_id'] = results_message.message_id
         
-        timestamp = datetime.now().strftime("%H:%M:%S")
-        print(f"[{timestamp}] ✅ Голосование создано")
+        print(f"[{moscow_now.strftime('%H:%M:%S')}] ✅ Голосование создано")
         
     except Exception as e:
-        timestamp = datetime.now().strftime("%H:%M:%S")
-        print(f"[{timestamp}] ❌ Ошибка при создании голосования: {e}")
+        moscow_now = datetime.now(MOSCOW_TZ)
+        print(f"[{moscow_now.strftime('%H:%M:%S')}] ❌ Ошибка при создании голосования: {e}")
 
 # ====== ОБНОВЛЕНИЕ СООБЩЕНИЯ С РЕЗУЛЬТАТАМИ ======
 def update_results_message():
@@ -262,12 +268,12 @@ def update_results_message():
         
         total_yes = len(current_voting['yes_voters'])
         total_guests = sum(len(guests) for guests in current_voting['plus_one_voters'].values())
-        timestamp = datetime.now().strftime("%H:%M:%S")
-        print(f"[{timestamp}] 📊 Статистика: Да: {total_yes}, гостей: {total_guests}")
+        moscow_now = datetime.now(MOSCOW_TZ)
+        print(f"[{moscow_now.strftime('%H:%M:%S')}] 📊 Статистика: Да: {total_yes}, гостей: {total_guests}")
         
     except Exception as e:
-        timestamp = datetime.now().strftime("%H:%M:%S")
-        print(f"[{timestamp}] ❌ Ошибка при обновлении сообщения с результатами: {e}")
+        moscow_now = datetime.now(MOSCOW_TZ)
+        print(f"[{moscow_now.strftime('%H:%M:%S')}] ❌ Ошибка при обновлении сообщения с результатами: {e}")
 
 # ====== ОБНОВЛЕНИЕ СООБЩЕНИЯ С КНОПКАМИ ======
 def update_voting_message():
@@ -313,8 +319,8 @@ def update_voting_message():
         )
         
     except Exception as e:
-        timestamp = datetime.now().strftime("%H:%M:%S")
-        print(f"[{timestamp}] ❌ Ошибка при обновлении сообщения с кнопками: {e}")
+        moscow_now = datetime.now(MOSCOW_TZ)
+        print(f"[{moscow_now.strftime('%H:%M:%S')}] ❌ Ошибка при обновлении сообщения с кнопками: {e}")
 
 # ====== ФУНКЦИЯ ДЛЯ ОБНОВЛЕНИЯ УВЕДОМИТЕЛЬНОГО СООБЩЕНИЯ ======
 def update_notification_message():
@@ -368,8 +374,8 @@ def update_notification_message():
         )
         
     except Exception as e:
-        timestamp = datetime.now().strftime("%H:%M:%S")
-        print(f"[{timestamp}] ❌ Ошибка при обновлении уведомительного сообщения: {e}")
+        moscow_now = datetime.now(MOSCOW_TZ)
+        print(f"[{moscow_now.strftime('%H:%M:%S')}] ❌ Ошибка при обновлении уведомительного сообщения: {e}")
 
 # ====== ФУНКЦИЯ ДЛЯ СОЗДАНИЯ УВЕДОМИТЕЛЬНОГО СООБЩЕНИЯ ======
 def create_notification_message():
@@ -421,12 +427,12 @@ def create_notification_message():
         # Сохраняем ID уведомительного сообщения
         current_voting['notification_message_id'] = notification_message.message_id
         
-        timestamp = datetime.now().strftime("%H:%M:%S")
-        print(f"[{timestamp}] 📢 Уведомительное сообщение создано")
+        moscow_now = datetime.now(MOSCOW_TZ)
+        print(f"[{moscow_now.strftime('%H:%M:%S')}] 📢 Уведомительное сообщение создано")
         
     except Exception as e:
-        timestamp = datetime.now().strftime("%H:%M:%S")
-        print(f"[{timestamp}] ❌ Ошибка при создании уведомительного сообщения: {e}")
+        moscow_now = datetime.now(MOSCOW_TZ)
+        print(f"[{moscow_now.strftime('%H:%M:%S')}] ❌ Ошибка при создании уведомительного сообщения: {e}")
 
 # ====== ОБРАБОТЧИК НАЖАТИЯ КНОПОК ======
 @bot.callback_query_handler(func=lambda call: True)
@@ -524,7 +530,7 @@ def handle_button_click(call):
             'guest_name': guest_name,
             'host_name': display_name,
             'host_id': user_id,
-            'timestamp': datetime.now()
+            'timestamp': datetime.now(MOSCOW_TZ)
         }
         current_voting['plus_one_voters'][user_id].append(guest_data)
         
@@ -658,11 +664,11 @@ def _add_yes_manually_impl(message):
                 })
         
         # Логируем ручное добавление
-        timestamp = datetime.now().strftime("%H:%M:%S")
+        moscow_now = datetime.now(MOSCOW_TZ)
         if guest_count > 0:
-            print(f"[{timestamp}] 👑 АДМИН добавил вручную: {display_name} -> 'Да' с {guest_count} гостями")
+            print(f"[{moscow_now.strftime('%H:%M:%S')}] 👑 АДМИН добавил вручную: {display_name} -> 'Да' с {guest_count} гостями")
         else:
-            print(f"[{timestamp}] 👑 АДМИН добавил вручную: {display_name} -> 'Да'")
+            print(f"[{moscow_now.strftime('%H:%M:%S')}] 👑 АДМИН добавил вручную: {display_name} -> 'Да'")
         
         # Обновляем сообщения
         update_voting_message()
@@ -773,8 +779,8 @@ def _remove_voter_impl(message):
         
         if removed:
             # Логируем удаление
-            timestamp = datetime.now().strftime("%H:%M:%S")
-            print(f"[{timestamp}] 👑 АДМИН удалил: {removed_name} из списка {list_type}")
+            moscow_now = datetime.now(MOSCOW_TZ)
+            print(f"[{moscow_now.strftime('%H:%M:%S')}] 👑 АДМИН удалил: {removed_name} из списка {list_type}")
             
             update_voting_message()
             update_results_message()
@@ -985,8 +991,8 @@ def _close_voting_impl(message):
         )
         
         # Логируем закрытие голосования
-        timestamp = datetime.now().strftime("%H:%M:%S")
-        print(f"[{timestamp}] 🏁 Голосование закрыто админом")
+        moscow_now = datetime.now(MOSCOW_TZ)
+        print(f"[{moscow_now.strftime('%H:%M:%S')}] 🏁 Голосование закрыто админом")
         
         # Отправляем подтверждение и удаляем через 3 секунды
         msg = bot.reply_to(message, "✅ Голосование закрыто. Кнопки убраны.")
@@ -1041,13 +1047,21 @@ def _set_notification_time_impl(message):
         # Валидация времени
         datetime.strptime(new_time, "%H:%M")
         
-        # Обновляем время и перезагружаем планировщик
+        # Обновляем время
         NOTIFICATION_TIME = new_time
         schedule.clear('notification')  # Очищаем старое расписание
-        schedule.every().day.at(NOTIFICATION_TIME).do(create_notification_message).tag('notification')
+        
+        # Создаем новое расписание с учетом часового пояса
+        def scheduled_create_notification():
+            create_notification_message()
+        
+        schedule.every().day.at(NOTIFICATION_TIME).do(scheduled_create_notification).tag('notification')
+        
+        moscow_now = datetime.now(MOSCOW_TZ)
+        print(f"[{moscow_now.strftime('%H:%M:%S')}] ⏰ Время уведомления изменено на {NOTIFICATION_TIME} МСК")
         
         # Отправляем подтверждение и удаляем через 3 секунды
-        msg = bot.reply_to(message, f"✅ Время уведомительного сообщения обновлено! Новое время: {NOTIFICATION_TIME}")
+        msg = bot.reply_to(message, f"✅ Время уведомительного сообщения обновлено! Новое время: {NOTIFICATION_TIME} МСК")
         time.sleep(3)
         delete_message_safe(msg.chat.id, msg.message_id)
         
@@ -1065,7 +1079,7 @@ def run_scheduler():
     """Запускает планировщик задач в отдельном потоке"""
     while True:
         schedule.run_pending()
-        time.sleep(60)  # Проверяем каждую минуту
+        time.sleep(1)  # Проверяем каждую секунду для точности
 
 # ====== КОМАНДА ДЛЯ ПОЛУЧЕНИЯ ID ГРУППЫ ======
 @bot.message_handler(commands=['getid'])
@@ -1095,6 +1109,7 @@ def get_group_id_command(message):
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     """Приветственное сообщение"""
+    moscow_now = datetime.now(MOSCOW_TZ)
     welcome_text = f"""
     🤖 *Бот для голосования о тренировках*
     
@@ -1126,9 +1141,11 @@ def send_welcome(message):
     *Случайные имена гостей:*
     {', '.join(GUEST_NAMES)}
     
+    *Текущее время (Москва):* {moscow_now.strftime('%H:%M')}
+    
     *Автоматически:* 
-    - Бот создает голосование каждый день в {VOTING_TIME}
-    - Бот создает уведомительное сообщение каждый день в {NOTIFICATION_TIME}
+    - Бот создает голосование каждый день в {VOTING_TIME} МСК
+    - Бот создает уведомительное сообщение каждый день в {NOTIFICATION_TIME} МСК
     """
     
     msg = bot.reply_to(message, welcome_text, parse_mode='Markdown')
@@ -1174,13 +1191,21 @@ def _set_voting_time_impl(message):
         # Валидация времени
         datetime.strptime(new_time, "%H:%M")
         
-        # Обновляем время и перезагружаем планировщик
+        # Обновляем время
         VOTING_TIME = new_time
         schedule.clear('daily_voting')  # Очищаем старое расписание
-        schedule.every().day.at(VOTING_TIME).do(create_daily_voting).tag('daily_voting')
+        
+        # Создаем новое расписание с учетом часового пояса
+        def scheduled_create_daily_voting():
+            create_daily_voting()
+        
+        schedule.every().day.at(VOTING_TIME).do(scheduled_create_daily_voting).tag('daily_voting')
+        
+        moscow_now = datetime.now(MOSCOW_TZ)
+        print(f"[{moscow_now.strftime('%H:%M:%S')}] ⏰ Время голосования изменено на {VOTING_TIME} МСК")
         
         # Отправляем подтверждение и удаляем через 3 секунды
-        msg = bot.reply_to(message, f"✅ Время голосования обновлено! Новое время: {VOTING_TIME}")
+        msg = bot.reply_to(message, f"✅ Время голосования обновлено! Новое время: {VOTING_TIME} МСК")
         time.sleep(3)
         delete_message_safe(msg.chat.id, msg.message_id)
         
@@ -1207,8 +1232,8 @@ def _clear_voting_impl(message):
     current_voting['user_cache'] = {}
     
     # Логируем очистку
-    timestamp = datetime.now().strftime("%H:%M:%S")
-    print(f"[{timestamp}] 🧹 АДМИН очистил все результаты голосования")
+    moscow_now = datetime.now(MOSCOW_TZ)
+    print(f"[{moscow_now.strftime('%H:%M:%S')}] 🧹 АДМИН очистил все результаты голосования")
     
     update_voting_message()
     update_results_message()
@@ -1222,8 +1247,12 @@ def _clear_voting_impl(message):
 # ====== ЗАПУСК БОТА ======
 if __name__ == "__main__":
     print("🤖 Бот запускается...")
-    print(f"⏰ Бот запланировал голосование на {VOTING_TIME}")
-    print(f"⏰ Бот запланировал уведомление на {NOTIFICATION_TIME}")
+    
+    # Устанавливаем часовой пояс для schedule
+    schedule.default_timezone = MOSCOW_TZ
+    
+    print(f"⏰ Бот запланировал голосование на {VOTING_TIME} МСК")
+    print(f"⏰ Бот запланировал уведомление на {NOTIFICATION_TIME} МСК")
     print(f"👑 Администратор: @{ADMIN_USERNAME}")
     print("")
     print("📋 КОМАНДЫ ДЛЯ АДМИНИСТРАТОРА:")
@@ -1242,7 +1271,7 @@ if __name__ == "__main__":
     print("🎯 КНОПКИ ДЛЯ УЧАСТНИКОВ:")
     print("  ✅ Да - Я иду на тренировку")
     print("  ❌ Нет - Я не иду на тренировку")
-    print("  ➕ +1 - Добавить гостя (теперь МОЖНО без выбора 'Да')")  # ИЗМЕНЕНО!
+    print("  ➕ +1 - Добавить гостя (теперь МОЖНО без выбора 'Да')")
     print("  ➖ -1 - Убрать последнего добавленного гостя")
     print("")
     print("🎲 СЛУЧАЙНЫЕ ИМЕНА ГОСТЕЙ:")
@@ -1253,7 +1282,7 @@ if __name__ == "__main__":
     print("  - Команды доступны только @Ravenskort")
     print("  - Команды автоматически удаляются после выполнения")
     print("  - Ответы на команды удаляются через 3 секунды")
-    print("  - +1 можно добавлять БЕЗ выбора 'Да'")  # ИЗМЕНЕНО!
+    print("  - +1 можно добавлять БЕЗ выбора 'Да'")
     print("  - Гости отображаются как: 'СлучайноеИмя от nickname(username)'")
     print("  - В первом сообщении отображается только 'Да', 'Нет' и 'Всего'")
     print("  - Во втором сообщении показывается список с гостями")
@@ -1268,11 +1297,20 @@ if __name__ == "__main__":
     except:
         print("⚠️  ID группы устарел. Используйте /getid в группе для получения ID")
 
-    # Настраиваем ежедневное голосование
+    # Очищаем все старые задачи
+    schedule.clear()
+    
+    # Настраиваем ежедневное голосование (уже с правильным часовым поясом)
     schedule.every().day.at(VOTING_TIME).do(create_daily_voting).tag('daily_voting')
+    print(f"📅 Голосование запланировано на {VOTING_TIME} МСК")
     
     # Настраиваем ежедневное уведомительное сообщение
     schedule.every().day.at(NOTIFICATION_TIME).do(create_notification_message).tag('notification')
+    print(f"📅 Уведомление запланировано на {NOTIFICATION_TIME} МСК")
+    
+    # Для теста: создаем голосование сразу при запуске
+    print("🔄 Создание тестового голосования сейчас...")
+    create_daily_voting()
     
     # Запускаем планировщик в отдельном потоке
     scheduler_thread = Thread(target=run_scheduler)
@@ -1284,6 +1322,6 @@ if __name__ == "__main__":
     
     # Запускаем бота
     try:
-        bot.polling(none_stop=True, interval=1)
+        bot.polling(none_stop=True, interval=1, timeout=30)
     except Exception as e:
         print(f"❌ Ошибка: {e}")
