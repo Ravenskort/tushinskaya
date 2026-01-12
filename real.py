@@ -1,4 +1,3 @@
-[file content begin]
 import telebot
 import schedule
 import time
@@ -1299,4 +1298,4 @@ if __name__ == "__main__":
         bot.polling(none_stop=True, interval=1, timeout=30)
     except Exception as e:
         print(f"❌ Ошибка: {e}")
-[file content end]
+
