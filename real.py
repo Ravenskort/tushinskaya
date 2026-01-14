@@ -52,10 +52,6 @@ def is_admin_or_owner(user_id, chat_id=GROUP_CHAT_ID):
         if member.status in ['creator', 'administrator']:
             return True
         
-        # Также можно добавить проверку по username, если нужно сохранить старую логику
-        # if member.user.username and member.user.username.lower() == ADMIN_USERNAME.lower():
-        #     return True
-            
         return False
     except Exception as e:
         print(f"❌ Ошибка при проверке прав администратора: {e}")
@@ -394,7 +390,13 @@ def update_notification_message():
 
 # ====== ФУНКЦИЯ ДЛЯ СОЗДАНИЯ УВЕДОМИТЕЛЬНОГО СООБЩЕНИЯ ======
 def create_notification_message():
-    """Создает уведомительное сообщение в заданное время"""
+    """Создает уведомительное сообщение в заданное время ТОЛЬКО ПО СУББОТАМ"""
+    # Проверяем, что сегодня суббота
+    moscow_now = datetime.now(MOSCOW_TZ)
+    if moscow_now.weekday() != 5:  # 0 - понедельник, 5 - суббота
+        print(f"[{moscow_now.strftime('%H:%M:%S')}] 📅 Сегодня не суббота, уведомление не отправляется")
+        return
+    
     try:
         # Получаем список всех, кто идет (Да + гости)
         all_going = []
@@ -442,8 +444,7 @@ def create_notification_message():
         # Сохраняем ID уведомительного сообщения
         current_voting['notification_message_id'] = notification_message.message_id
 
-        moscow_now = datetime.now(MOSCOW_TZ)
-        print(f"[{moscow_now.strftime('%H:%M:%S')}] 📢 Уведомительное сообщение создано")
+        print(f"[{moscow_now.strftime('%H:%M:%S')}] 📢 Уведомительное сообщение создано (только по субботам)")
 
     except Exception as e:
         moscow_now = datetime.now(MOSCOW_TZ)
@@ -1046,7 +1047,7 @@ def _create_notification_now_impl(message):
 # ====== КОМАНДА ДЛЯ ИЗМЕНЕНИЯ ВРЕМЕНИ УВЕДОМЛЕНИЯ ======
 @bot.message_handler(commands=['set_notify_time'])
 def set_notification_time(message):
-    """Установить новое время для уведомительного сообщения"""
+    """Установить новое время для уведомительного сообщения (ТОЛЬКО ПО СУББОТАМ)"""
     handle_admin_command(message, _set_notification_time_impl)
 
 def _set_notification_time_impl(message):
@@ -1068,19 +1069,29 @@ def _set_notification_time_impl(message):
         # Обновляем время
         NOTIFICATION_TIME = new_time
         schedule.clear('notification')  # Очищаем старое расписание
+        
+        # Конвертируем время в UTC
+        def msk_to_utc(time_msk):
+            hour, minute = map(int, time_msk.split(':'))
+            hour_utc = hour - 3
+            if hour_utc < 0:
+                hour_utc += 24
+            return f"{hour_utc:02d}:{minute:02d}"
+        
+        notification_time_utc = msk_to_utc(NOTIFICATION_TIME)
 
-        # Создаем новое расписание с учетом часового пояса
+        # Создаем новое расписание ТОЛЬКО ПО СУББОТАМ
         def scheduled_create_notification():
             create_notification_message()
 
-        schedule.every().day.at(NOTIFICATION_TIME).do(scheduled_create_notification).tag('notification')
+        schedule.every().saturday.at(notification_time_utc).do(scheduled_create_notification).tag('notification')
 
         moscow_now = datetime.now(MOSCOW_TZ)
-        print(f"[{moscow_now.strftime('%H:%M:%S')}] ⏰ Время уведомления изменено на {NOTIFICATION_TIME} МСК")
+        print(f"[{moscow_now.strftime('%H:%M:%S')}] ⏰ Время уведомления изменено на {NOTIFICATION_TIME} МСК (только по субботам)")
 
         # Отправляем подтверждение и удаляем через 3 секунды
         msg = bot.reply_to(message,
-                           f"✅ Время уведомительного сообщения обновлено! Новое время: {NOTIFICATION_TIME} МСК")
+                           f"✅ Время уведомительного сообщения обновлено! Теперь только по субботам в {NOTIFICATION_TIME} МСК")
         time.sleep(3)
         delete_message_safe(msg.chat.id, msg.message_id)
 
@@ -1165,7 +1176,7 @@ def send_welcome(message):
     
     *Автоматически:* 
     - Бот создает голосование каждый день в {VOTING_TIME} МСК
-    - Бот создает уведомительное сообщение каждый день в {NOTIFICATION_TIME} МСК
+    - Бот создает уведомительное сообщение ТОЛЬКО ПО СУББОТАМ в {NOTIFICATION_TIME} МСК
     """
 
     msg = bot.reply_to(message, welcome_text, parse_mode='Markdown')
@@ -1280,7 +1291,7 @@ if __name__ == "__main__":
     notification_time_utc = msk_to_utc(NOTIFICATION_TIME)
 
     print(f"⏰ Голосование: {VOTING_TIME} МСК ({voting_time_utc} UTC)")
-    print(f"⏰ Уведомление: {NOTIFICATION_TIME} МСК ({notification_time_utc} UTC)")
+    print(f"⏰ Уведомление: {NOTIFICATION_TIME} МСК ({notification_time_utc} UTC) - ТОЛЬКО ПО СУББОТАМ")
     print(f"👑 Команды администратора доступны всем администраторам и владельцу группы")
 
     # Автоматическая проверка при старте
@@ -1297,9 +1308,9 @@ if __name__ == "__main__":
     schedule.every().day.at(voting_time_utc).do(create_daily_voting).tag('daily_voting')
     print(f"📅 Голосование запланировано на {voting_time_utc} UTC ({VOTING_TIME} МСК)")
 
-    # Настраиваем ежедневное уведомительное сообщение в UTC
-    schedule.every().day.at(notification_time_utc).do(create_notification_message).tag('notification')
-    print(f"📅 Уведомление запланировано на {notification_time_utc} UTC ({NOTIFICATION_TIME} МСК)")
+    # Настраиваем уведомительное сообщение ТОЛЬКО ПО СУББОТАМ в UTC
+    schedule.every().saturday.at(notification_time_utc).do(create_notification_message).tag('notification')
+    print(f"📅 Уведомление запланировано на субботу {notification_time_utc} UTC ({NOTIFICATION_TIME} МСК)")
 
     # Запускаем планировщик в отдельном потоке
     scheduler_thread = Thread(target=run_scheduler)
