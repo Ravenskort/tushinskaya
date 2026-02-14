@@ -12,8 +12,8 @@ TOKEN = "8568812025:AAHL-u8tquSPxlBW8ZEXz2wv4oi0z8R6r3U"  # Вставьте в�
 GROUP_CHAT_ID = -1002990790597  # ID вашей группы (должен начинаться с -)
 
 # Время публикации (24-часовой формат, указываем МСК)
-VOTING_TIME = "12:00"  # Время отправки сообщения с кнопками (по Москве)
-NOTIFICATION_TIME = "18:00"  # Время отправки финального сообщения "Жду на Тушинской" (по Москве)
+VOTING_TIME = "12:00"  # ТОЛЬКО ПО СУББОТАМ
+NOTIFICATION_TIME = "18:00"  # ТОЛЬКО ПО СУББОТАМ
 
 # Устанавливаем часовой пояс (Москва)
 MOSCOW_TZ = pytz.timezone('Europe/Moscow')
@@ -30,6 +30,7 @@ current_voting = {
     'voting_message_id': None,  # ID сообщения с кнопками
     'results_message_id': None,  # ID сообщения с результатами
     'notification_message_id': None,  # ID финального сообщения
+    'extra_list_message_id': None,  # ID дополнительного списка
     'date': None,
     'yes_voters': {},  # user_id: user_data (основные голоса)
     'no_voters': {},  # user_id: user_data
@@ -161,10 +162,15 @@ def log_vote(user_id, user_name, vote_type, guest_count=0):
 
 # ====== ФУНКЦИЯ СОЗДАНИЯ СООБЩЕНИЙ С КНОПКАМИ И РЕЗУЛЬТАТАМИ ======
 def create_daily_voting():
-    """Создает сообщение с кнопками и сообщение с результатами в группе в заданное время"""
+    """Создает сообщение с кнопками и сообщение с результатами в группе ТОЛЬКО ПО СУББОТАМ"""
     try:
         # Текущее время по Москве
         moscow_now = datetime.now(MOSCOW_TZ)
+        
+        # ПРОВЕРКА: ТОЛЬКО ПО СУББОТАМ
+        if moscow_now.weekday() != 5:  # 0 - понедельник, 5 - суббота
+            print(f"[{moscow_now.strftime('%H:%M:%S')}] 📅 Сегодня не суббота, голосование не создается")
+            return
 
         # Сбрасываем данные о предыдущем голосовании
         global current_voting
@@ -172,6 +178,7 @@ def create_daily_voting():
             'voting_message_id': None,
             'results_message_id': None,
             'notification_message_id': None,
+            'extra_list_message_id': None,
             'date': moscow_now,
             'yes_voters': {},
             'no_voters': {},
@@ -193,7 +200,7 @@ def create_daily_voting():
         keyboard.add(btn_yes, btn_no)
         keyboard.add(btn_plus_one, btn_minus_one)
 
-        voting_text = "🏀 *Тренировка на Тушинской сегодня*\n\nВыберите вариант:"
+        voting_text = "🏀 *Тренировка на Тушинской сегодня (СУББОТА)*\n\nВыберите вариант:"
         voting_message = bot.send_message(
             chat_id=GROUP_CHAT_ID,
             text=voting_text,
@@ -217,7 +224,7 @@ def create_daily_voting():
         # Сохраняем ID сообщения с результатами
         current_voting['results_message_id'] = results_message.message_id
 
-        print(f"[{moscow_now.strftime('%H:%M:%S')}] ✅ Голосование создано")
+        print(f"[{moscow_now.strftime('%H:%M:%S')}] ✅ Голосование создано (СУББОТА)")
 
     except Exception as e:
         moscow_now = datetime.now(MOSCOW_TZ)
@@ -225,7 +232,7 @@ def create_daily_voting():
 
 # ====== ОБНОВЛЕНИЕ СООБЩЕНИЯ С РЕЗУЛЬТАТАМИ ======
 def update_results_message():
-    """Обновляет сообщение с результатами"""
+    """Обновляет сообщение с результатами (все записи, без ограничения строк)"""
     if not current_voting['results_message_id']:
         return
 
@@ -260,6 +267,7 @@ def update_results_message():
                     guest_name = guest_data.get('guest_name', 'Гость')
                     all_entries.append(f"{guest_name} от {display_name}")
 
+        # ВСЕ ЗАПИСИ - без ограничения
         if all_entries:
             for i, entry in enumerate(all_entries, 1):
                 results_text += f"{i}. {entry}\n"
@@ -300,7 +308,7 @@ def update_voting_message():
         total_people = yes_count + total_guests
 
         # Формируем обновленный текст (как было раньше)
-        message_text = f"🏀 *Тренировка на Тушинской сегодня*\n\n"
+        message_text = f"🏀 *Тренировка на Тушинской сегодня (СУББОТА)*\n\n"
         message_text += f"✅ Да: {yes_count} человек\n"
         message_text += f"❌ Нет: {no_count} человек\n"
         message_text += f"👥 Всего: {yes_count + no_count}\n\n"
@@ -449,6 +457,57 @@ def create_notification_message():
     except Exception as e:
         moscow_now = datetime.now(MOSCOW_TZ)
         print(f"[{moscow_now.strftime('%H:%M:%S')}] ❌ Ошибка при создании уведомительного сообщения: {e}")
+
+# ====== ФУНКЦИЯ ДЛЯ СОЗДАНИЯ ДОПОЛНИТЕЛЬНОГО СПИСКА ======
+def create_extra_list():
+    """Создает дополнительное сообщение со всеми, кто голосует за 'Да' и их гостями"""
+    try:
+        # Собираем все записи тех, кто голосует за "Да" (включая их гостей)
+        all_entries = []
+
+        # Добавляем тех, кто голосует за "Да"
+        for user_id, user_data in current_voting['yes_voters'].items():
+            display_name = user_data.get('display_name', f'Участник {user_id}')
+            all_entries.append(f"{display_name}")
+
+            # Добавляем гостей этого пользователя
+            if user_id in current_voting['plus_one_voters']:
+                guest_list = current_voting['plus_one_voters'][user_id]
+                for guest_data in guest_list:
+                    guest_name = guest_data.get('guest_name', 'Гость')
+                    all_entries.append(f"{guest_name} от {display_name}")
+
+        # Формируем текст для дополнительного списка
+        extra_text = "🏀 *Дополнительный список (Да + гости):*\n\n"
+        
+        if all_entries:
+            for i, entry in enumerate(all_entries, 1):
+                extra_text += f"{i}. {entry}\n"
+            
+            # Добавляем итоги
+            total_yes = len(current_voting['yes_voters'])
+            total_guests = sum(len(guests) for guests in current_voting['plus_one_voters'].values())
+            total_all = total_yes + total_guests
+            extra_text += f"\n📊 *Итого:* {total_all} человек ({total_yes} основных + {total_guests} гостей)"
+        else:
+            extra_text += "_Пока никто не проголосовал за 'Да'_ 😔"
+
+        # Отправляем сообщение
+        extra_message = bot.send_message(
+            chat_id=GROUP_CHAT_ID,
+            text=extra_text,
+            parse_mode='Markdown'
+        )
+
+        # Сохраняем ID дополнительного сообщения
+        current_voting['extra_list_message_id'] = extra_message.message_id
+
+        moscow_now = datetime.now(MOSCOW_TZ)
+        print(f"[{moscow_now.strftime('%H:%M:%S')}] 📋 Дополнительный список создан")
+
+    except Exception as e:
+        moscow_now = datetime.now(MOSCOW_TZ)
+        print(f"[{moscow_now.strftime('%H:%M:%S')}] ❌ Ошибка при создании дополнительного списка: {e}")
 
 # ====== ОБРАБОТЧИК НАЖАТИЯ КНОПОК ======
 @bot.callback_query_handler(func=lambda call: True)
@@ -602,6 +661,9 @@ def handle_button_click(call):
     # ОБНОВЛЯЕМ ВСЕ СООБЩЕНИЯ ПОСЛЕ КАЖДОГО ДЕЙСТВИЯ
     update_voting_message()
     update_results_message()
+    # Также обновляем дополнительный список, если он существует
+    if current_voting['extra_list_message_id']:
+        update_extra_list()
 
 # ====== КОМАНДА ДЛЯ РУЧНОГО ДОБАВЛЕНИЯ ПОЛЬЗОВАТЕЛЕЙ ======
 @bot.message_handler(commands=['add_yes'])
@@ -689,6 +751,8 @@ def _add_yes_manually_impl(message):
         # Обновляем сообщения
         update_voting_message()
         update_results_message()
+        if current_voting['extra_list_message_id']:
+            update_extra_list()
 
         # Отправляем подтверждение и удаляем через 3 секунды
         if guest_count > 0:
@@ -800,6 +864,8 @@ def _remove_voter_impl(message):
 
             update_voting_message()
             update_results_message()
+            if current_voting['extra_list_message_id']:
+                update_extra_list()
 
             # Отправляем подтверждение и удаляем через 3 секунды
             msg = bot.reply_to(message, f"✅ Пользователь '{removed_name}' удален из списка {list_type}")
@@ -925,6 +991,79 @@ def _show_all_voters_impl(message):
     msg = bot.reply_to(message, response, parse_mode='Markdown')
     # Не удаляем список автоматически
 
+# ====== КОМАНДА ДЛЯ СОЗДАНИЯ ДОПОЛНИТЕЛЬНОГО СПИСКА ======
+@bot.message_handler(commands=['extra_list'])
+def create_extra_list_command(message):
+    """Создать дополнительное сообщение со списком 'Да' и гостей"""
+    handle_admin_command(message, _create_extra_list_impl)
+
+def _create_extra_list_impl(message):
+    """Реализация команды создания дополнительного списка"""
+    try:
+        create_extra_list()
+        
+        # Отправляем подтверждение и удаляем через 3 секунды
+        msg = bot.reply_to(message, "📋 Дополнительный список создан!")
+        time.sleep(3)
+        delete_message_safe(msg.chat.id, msg.message_id)
+        
+    except Exception as e:
+        error_msg = bot.reply_to(message, f"❌ Ошибка: {e}")
+        time.sleep(3)
+        delete_message_safe(error_msg.chat.id, error_msg.message_id)
+
+# ====== ФУНКЦИЯ ДЛЯ ОБНОВЛЕНИЯ ДОПОЛНИТЕЛЬНОГО СПИСКА ======
+def update_extra_list():
+    """Обновляет дополнительный список"""
+    if not current_voting['extra_list_message_id']:
+        return
+        
+    try:
+        # Собираем все записи тех, кто голосует за "Да" (включая их гостей)
+        all_entries = []
+
+        # Добавляем тех, кто голосует за "Да"
+        for user_id, user_data in current_voting['yes_voters'].items():
+            display_name = user_data.get('display_name', f'Участник {user_id}')
+            all_entries.append(f"{display_name}")
+
+            # Добавляем гостей этого пользователя
+            if user_id in current_voting['plus_one_voters']:
+                guest_list = current_voting['plus_one_voters'][user_id]
+                for guest_data in guest_list:
+                    guest_name = guest_data.get('guest_name', 'Гость')
+                    all_entries.append(f"{guest_name} от {display_name}")
+
+        # Формируем текст для дополнительного списка
+        extra_text = "🏀 *Дополнительный список (Да + гости):*\n\n"
+        
+        if all_entries:
+            for i, entry in enumerate(all_entries, 1):
+                extra_text += f"{i}. {entry}\n"
+            
+            # Добавляем итоги
+            total_yes = len(current_voting['yes_voters'])
+            total_guests = sum(len(guests) for guests in current_voting['plus_one_voters'].values())
+            total_all = total_yes + total_guests
+            extra_text += f"\n📊 *Итого:* {total_all} человек ({total_yes} основных + {total_guests} гостей)"
+        else:
+            extra_text += "_Пока никто не проголосовал за 'Да'_ 😔"
+
+        # Обновляем сообщение
+        bot.edit_message_text(
+            chat_id=GROUP_CHAT_ID,
+            message_id=current_voting['extra_list_message_id'],
+            text=extra_text,
+            parse_mode='Markdown'
+        )
+
+        moscow_now = datetime.now(MOSCOW_TZ)
+        print(f"[{moscow_now.strftime('%H:%M:%S')}] 📋 Дополнительный список обновлен")
+
+    except Exception as e:
+        moscow_now = datetime.now(MOSCOW_TZ)
+        print(f"[{moscow_now.strftime('%H:%M:%S')}] ❌ Ошибка при обновлении дополнительного списка: {e}")
+
 # ====== КОМАНДА ДЛЯ ЗАКРЫТИЯ ГОЛОСОВАНИЯ ======
 @bot.message_handler(commands=['close'])
 def close_voting(message):
@@ -947,7 +1086,7 @@ def _close_voting_impl(message):
         total_people = yes_count + total_guests
 
         # Формируем финальный текст для сообщения с кнопками (как было раньше)
-        final_text = f"🏀 *Тренировка на Тушинской сегодня*\n\n"
+        final_text = f"🏀 *Тренировка на Тушинской сегодня (СУББОТА)*\n\n"
         final_text += f"✅ Да: {yes_count} человек\n"
         final_text += f"❌ Нет: {no_count} человек\n"
         final_text += f"👥 Всего: {yes_count + no_count}\n\n"
@@ -1152,13 +1291,14 @@ def send_welcome(message):
     *Команды администратора:*
     /create - Создать голосование сейчас
     /notify - Создать уведомительное сообщение сейчас
+    /extra_list - Создать дополнительный список (Да + гости)
     /add_yes имя [username] [гости] - Добавить пользователя в список 'Да'
     /remove имя - Удалить пользователя из списка
     /stats - Текущая статистика
     /list - Список всех голосовавших
     /close - Закрыть голосование (убрать кнопки)
-    /set_time HH:MM - Установить время для автоматического голосования
-    /set_notify_time HH:MM - Установить время для уведомительного сообщения
+    /set_time HH:MM - Установить время для автоматического голосования (только суббота)
+    /set_notify_time HH:MM - Установить время для уведомительного сообщения (только суббота)
     /getid - Получить ID группы
     /clear - Очистить текущие результаты голосования
     
@@ -1174,9 +1314,9 @@ def send_welcome(message):
     
     *Текущее время (Москва):* {moscow_now.strftime('%H:%M')}
     
-    *Автоматически:* 
-    - Бот создает голосование каждый день в {VOTING_TIME} МСК
-    - Бот создает уведомительное сообщение ТОЛЬКО ПО СУББОТАМ в {NOTIFICATION_TIME} МСК
+    *Автоматически (ТОЛЬКО ПО СУББОТАМ):* 
+    - Бот создает голосование в {VOTING_TIME} МСК
+    - Бот создает уведомительное сообщение в {NOTIFICATION_TIME} МСК
     """
 
     msg = bot.reply_to(message, welcome_text, parse_mode='Markdown')
@@ -1203,7 +1343,7 @@ def _create_voting_now_impl(message):
 
 @bot.message_handler(commands=['set_time'])
 def set_voting_time(message):
-    """Установить новое время для голосования"""
+    """Установить новое время для голосования (ТОЛЬКО ПО СУББОТАМ)"""
     handle_admin_command(message, _set_voting_time_impl)
 
 def _set_voting_time_impl(message):
@@ -1226,17 +1366,27 @@ def _set_voting_time_impl(message):
         VOTING_TIME = new_time
         schedule.clear('daily_voting')  # Очищаем старое расписание
 
-        # Создаем новое расписание с учетом часового пояса
+        # Конвертируем время в UTC
+        def msk_to_utc(time_msk):
+            hour, minute = map(int, time_msk.split(':'))
+            hour_utc = hour - 3
+            if hour_utc < 0:
+                hour_utc += 24
+            return f"{hour_utc:02d}:{minute:02d}"
+        
+        voting_time_utc = msk_to_utc(VOTING_TIME)
+
+        # Создаем новое расписание ТОЛЬКО ПО СУББОТАМ
         def scheduled_create_daily_voting():
             create_daily_voting()
 
-        schedule.every().day.at(VOTING_TIME).do(scheduled_create_daily_voting).tag('daily_voting')
+        schedule.every().saturday.at(voting_time_utc).do(scheduled_create_daily_voting).tag('daily_voting')
 
         moscow_now = datetime.now(MOSCOW_TZ)
-        print(f"[{moscow_now.strftime('%H:%M:%S')}] ⏰ Время голосования изменено на {VOTING_TIME} МСК")
+        print(f"[{moscow_now.strftime('%H:%M:%S')}] ⏰ Время голосования изменено на {VOTING_TIME} МСК (только по субботам)")
 
         # Отправляем подтверждение и удаляем через 3 секунды
-        msg = bot.reply_to(message, f"✅ Время голосования обновлено! Новое время: {VOTING_TIME} МСК")
+        msg = bot.reply_to(message, f"✅ Время голосования обновлено! Теперь только по субботам в {VOTING_TIME} МСК")
         time.sleep(3)
         delete_message_safe(msg.chat.id, msg.message_id)
 
@@ -1269,6 +1419,8 @@ def _clear_voting_impl(message):
     update_voting_message()
     update_results_message()
     update_notification_message()
+    if current_voting['extra_list_message_id']:
+        update_extra_list()
 
     # Отправляем подтверждение и удаляем через 3 секунды
     msg = bot.reply_to(message, "✅ Результаты голосования очищены!")
@@ -1290,7 +1442,7 @@ if __name__ == "__main__":
     voting_time_utc = msk_to_utc(VOTING_TIME)
     notification_time_utc = msk_to_utc(NOTIFICATION_TIME)
 
-    print(f"⏰ Голосование: {VOTING_TIME} МСК ({voting_time_utc} UTC)")
+    print(f"⏰ Голосование: {VOTING_TIME} МСК ({voting_time_utc} UTC) - ТОЛЬКО ПО СУББОТАМ")
     print(f"⏰ Уведомление: {NOTIFICATION_TIME} МСК ({notification_time_utc} UTC) - ТОЛЬКО ПО СУББОТАМ")
     print(f"👑 Команды администратора доступны всем администраторам и владельцу группы")
 
@@ -1304,9 +1456,9 @@ if __name__ == "__main__":
     # Очищаем все старые задачи
     schedule.clear()
 
-    # Настраиваем ежедневное голосование в UTC (для Bothost)
-    schedule.every().day.at(voting_time_utc).do(create_daily_voting).tag('daily_voting')
-    print(f"📅 Голосование запланировано на {voting_time_utc} UTC ({VOTING_TIME} МСК)")
+    # ИСПРАВЛЕНИЕ: Настраиваем голосование ТОЛЬКО ПО СУББОТАМ в UTC
+    schedule.every().saturday.at(voting_time_utc).do(create_daily_voting).tag('daily_voting')
+    print(f"📅 Голосование запланировано на субботу {voting_time_utc} UTC ({VOTING_TIME} МСК)")
 
     # Настраиваем уведомительное сообщение ТОЛЬКО ПО СУББОТАМ в UTC
     schedule.every().saturday.at(notification_time_utc).do(create_notification_message).tag('notification')
