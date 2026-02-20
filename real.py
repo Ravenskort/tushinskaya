@@ -35,8 +35,7 @@ voting_data = {
     'yes_voters': {},               # Проголосовавшие ДА
     'no_voters': {},                # Проголосовавшие НЕТ
     'plus_one_voters': {},          # Гости (user_id: список гостей)
-    'user_cache': {},               # Кэш данных пользователей
-    'is_active': False              # Флаг активности голосования
+    'user_cache': {}                # Кэш данных пользователей
 }
 
 # ====== ИНИЦИАЛИЗАЦИЯ БОТА ======
@@ -49,8 +48,10 @@ def safe_delete(message_id, chat_id=GROUP_CHAT_ID):
     try:
         if message_id:
             bot.delete_message(chat_id, message_id)
-    except:
-        pass
+            return True
+    except Exception as e:
+        print(f"Ошибка удаления: {e}")
+        return False
 
 def safe_edit(message_id, text, parse_mode=None, reply_markup=None, chat_id=GROUP_CHAT_ID):
     """Безопасное редактирование сообщения"""
@@ -134,7 +135,7 @@ def log_action(action, user_name, details=""):
 # ====== ФУНКЦИИ ФОРМИРОВАНИЯ ТЕКСТА ======
 
 def get_results_text():
-    """Формирование текста сообщения с результатами"""
+    """Формирование текста сообщения с результатами (БЕЗ ОГРАНИЧЕНИЯ ПО СТРОКАМ)"""
     text = "🏀 *РЕЗУЛЬТАТЫ ГОЛОСОВАНИЯ*\n\n"
     text += "📋 *Полный список участников:*\n\n"
     
@@ -278,12 +279,8 @@ def get_voting_keyboard():
 def create_voting():
     """Создание нового голосования"""
     try:
-        # Сброс данных предыдущего голосования
-        voting_data['yes_voters'] = {}
-        voting_data['no_voters'] = {}
-        voting_data['plus_one_voters'] = {}
-        voting_data['user_cache'] = {}
-        voting_data['is_active'] = True
+        # Проверяем, существует ли уже активное голосование
+        moscow_now = datetime.now(MOSCOW_TZ)
         
         # Удаляем старые сообщения, если они есть
         if voting_data['voting_message_id']:
@@ -292,6 +289,15 @@ def create_voting():
             safe_delete(voting_data['results_message_id'])
         if voting_data['third_message_id']:
             safe_delete(voting_data['third_message_id'])
+        
+        # Сбрасываем данные, но сохраняем структуру
+        voting_data['yes_voters'] = {}
+        voting_data['no_voters'] = {}
+        voting_data['plus_one_voters'] = {}
+        voting_data['user_cache'] = {}
+        voting_data['voting_message_id'] = None
+        voting_data['results_message_id'] = None
+        voting_data['third_message_id'] = None
         
         # 1. СООБЩЕНИЕ С КНОПКАМИ
         voting_msg = bot.send_message(
@@ -310,7 +316,6 @@ def create_voting():
         )
         voting_data['results_message_id'] = results_msg.message_id
         
-        moscow_now = datetime.now(MOSCOW_TZ)
         print(f"[{moscow_now.strftime('%H:%M:%S')}] ✅ ГОЛОСОВАНИЕ СОЗДАНО")
         
     except Exception as e:
@@ -319,6 +324,8 @@ def create_voting():
 def create_third_message():
     """Создание третьего сообщения (в 18:00)"""
     try:
+        moscow_now = datetime.now(MOSCOW_TZ)
+        
         # Если третье сообщение уже существует, удаляем его
         if voting_data['third_message_id']:
             safe_delete(voting_data['third_message_id'])
@@ -332,7 +339,6 @@ def create_third_message():
         )
         voting_data['third_message_id'] = third_msg.message_id
         
-        moscow_now = datetime.now(MOSCOW_TZ)
         print(f"[{moscow_now.strftime('%H:%M:%S')}] 📢 ТРЕТЬЕ СООБЩЕНИЕ СОЗДАНО")
         
     except Exception as e:
@@ -343,79 +349,85 @@ def create_third_message():
 @bot.callback_query_handler(func=lambda call: True)
 def handle_callback(call):
     """Обработка нажатий на кнопки"""
-    if not voting_data['is_active']:
-        bot.answer_callback_query(call.id, "❌ Голосование не активно", show_alert=True)
-        return
-    
     user_id = call.from_user.id
     user = call.from_user
     display_name = get_display_name(user)
     
+    # Проверяем, есть ли сообщение с кнопками
+    if not voting_data['voting_message_id']:
+        bot.answer_callback_query(call.id, "❌ Голосование не активно. Дождитесь /start", show_alert=True)
+        return
+    
     # Сохраняем пользователя в кэш
     save_user_to_cache(user)
     
-    if call.data == "vote_yes":
-        # Удаляем из НЕТ, если был там
-        if user_id in voting_data['no_voters']:
-            del voting_data['no_voters'][user_id]
+    try:
+        if call.data == "vote_yes":
+            # Удаляем из НЕТ, если был там
+            if user_id in voting_data['no_voters']:
+                del voting_data['no_voters'][user_id]
+            
+            # Добавляем в ДА
+            voting_data['yes_voters'][user_id] = voting_data['user_cache'][user_id]
+            
+            bot.answer_callback_query(call.id, "✅ Вы выбрали ДА!", show_alert=False)
+            log_action("✅ ДА", display_name)
+            
+        elif call.data == "vote_no":
+            # Удаляем из ДА, если был там
+            if user_id in voting_data['yes_voters']:
+                del voting_data['yes_voters'][user_id]
+            
+            # Добавляем в НЕТ
+            voting_data['no_voters'][user_id] = voting_data['user_cache'][user_id]
+            
+            bot.answer_callback_query(call.id, "❌ Вы выбрали НЕТ!", show_alert=False)
+            log_action("❌ НЕТ", display_name)
+            
+        elif call.data == "plus_one":
+            # Добавление гостя
+            if user_id not in voting_data['plus_one_voters']:
+                voting_data['plus_one_voters'][user_id] = []
+            
+            guest_name = random.choice(GUEST_NAMES)
+            guest_data = {
+                'guest_name': guest_name,
+                'host_name': display_name,
+                'host_id': user_id,
+                'timestamp': datetime.now(MOSCOW_TZ)
+            }
+            
+            voting_data['plus_one_voters'][user_id].append(guest_data)
+            guest_count = len(voting_data['plus_one_voters'][user_id])
+            
+            bot.answer_callback_query(
+                call.id,
+                f"✅ Добавлен гость: {guest_name}\nВсего гостей: {guest_count}",
+                show_alert=False
+            )
+            log_action("➕ ГОСТЬ", display_name, f"({guest_name})")
+            
+        elif call.data == "minus_one":
+            # Удаление последнего гостя
+            if user_id not in voting_data['plus_one_voters'] or not voting_data['plus_one_voters'][user_id]:
+                bot.answer_callback_query(call.id, "❌ У вас нет гостей!", show_alert=True)
+                return
+            
+            removed = voting_data['plus_one_voters'][user_id].pop()
+            guest_name = removed.get('guest_name', 'Гость')
+            
+            if not voting_data['plus_one_voters'][user_id]:
+                del voting_data['plus_one_voters'][user_id]
+            
+            bot.answer_callback_query(call.id, f"✅ Убран гость: {guest_name}", show_alert=False)
+            log_action("➖ ГОСТЬ", display_name, f"(удален {guest_name})")
         
-        # Добавляем в ДА
-        voting_data['yes_voters'][user_id] = voting_data['user_cache'][user_id]
+        # Обновляем все сообщения после каждого действия
+        update_all_messages()
         
-        bot.answer_callback_query(call.id, "✅ Вы выбрали ДА!", show_alert=False)
-        log_action("✅ ДА", display_name)
-        
-    elif call.data == "vote_no":
-        # Удаляем из ДА, если был там
-        if user_id in voting_data['yes_voters']:
-            del voting_data['yes_voters'][user_id]
-        
-        # Добавляем в НЕТ
-        voting_data['no_voters'][user_id] = voting_data['user_cache'][user_id]
-        
-        bot.answer_callback_query(call.id, "❌ Вы выбрали НЕТ!", show_alert=False)
-        log_action("❌ НЕТ", display_name)
-        
-    elif call.data == "plus_one":
-        # Добавление гостя
-        if user_id not in voting_data['plus_one_voters']:
-            voting_data['plus_one_voters'][user_id] = []
-        
-        guest_name = random.choice(GUEST_NAMES)
-        guest_data = {
-            'guest_name': guest_name,
-            'host_name': display_name,
-            'host_id': user_id,
-            'timestamp': datetime.now(MOSCOW_TZ)
-        }
-        
-        voting_data['plus_one_voters'][user_id].append(guest_data)
-        guest_count = len(voting_data['plus_one_voters'][user_id])
-        
-        bot.answer_callback_query(
-            call.id,
-            f"✅ Добавлен гость: {guest_name}\nВсего гостей: {guest_count}",
-            show_alert=False
-        )
-        log_action("➕ ГОСТЬ", display_name, f"({guest_name})")
-        
-    elif call.data == "minus_one":
-        # Удаление последнего гостя
-        if user_id not in voting_data['plus_one_voters'] or not voting_data['plus_one_voters'][user_id]:
-            bot.answer_callback_query(call.id, "❌ У вас нет гостей!", show_alert=True)
-            return
-        
-        removed = voting_data['plus_one_voters'][user_id].pop()
-        guest_name = removed.get('guest_name', 'Гость')
-        
-        if not voting_data['plus_one_voters'][user_id]:
-            del voting_data['plus_one_voters'][user_id]
-        
-        bot.answer_callback_query(call.id, f"✅ Убран гость: {guest_name}", show_alert=False)
-        log_action("➖ ГОСТЬ", display_name, f"(удален {guest_name})")
-    
-    # Обновляем все сообщения
-    update_all_messages()
+    except Exception as e:
+        print(f"Ошибка обработки нажатия: {e}")
+        bot.answer_callback_query(call.id, "❌ Произошла ошибка", show_alert=True)
 
 # ====== КОМАНДЫ АДМИНИСТРАТОРОВ ======
 
@@ -436,7 +448,7 @@ def cmd_start(message):
     create_voting()
     
     # Отправляем подтверждение (удаляется через 3 сек)
-    confirm = bot.reply_to(message, "✅ Голосование запущено!")
+    confirm = bot.send_message(message.chat.id, "✅ Голосование запущено!")
     time.sleep(3)
     safe_delete(confirm.message_id, message.chat.id)
 
@@ -452,22 +464,28 @@ def cmd_restart(message):
     # Удаляем команду
     safe_delete(message.message_id, message.chat.id)
     
+    # Проверяем, есть ли активное голосование
+    if not voting_data['voting_message_id']:
+        confirm = bot.send_message(message.chat.id, "❌ Нет активного голосования. Используйте /start")
+        time.sleep(3)
+        safe_delete(confirm.message_id, message.chat.id)
+        return
+    
     # Удаляем старое сообщение с результатами, если оно есть
     if voting_data['results_message_id']:
         safe_delete(voting_data['results_message_id'])
         voting_data['results_message_id'] = None
     
     # Создаем новое сообщение с результатами
-    if voting_data['is_active']:
-        results_msg = bot.send_message(
-            chat_id=GROUP_CHAT_ID,
-            text=get_results_text(),
-            parse_mode='Markdown'
-        )
-        voting_data['results_message_id'] = results_msg.message_id
+    results_msg = bot.send_message(
+        chat_id=GROUP_CHAT_ID,
+        text=get_results_text(),
+        parse_mode='Markdown'
+    )
+    voting_data['results_message_id'] = results_msg.message_id
     
     # Отправляем подтверждение
-    confirm = bot.reply_to(message, "✅ Сообщение с результатами перезапущено!")
+    confirm = bot.send_message(message.chat.id, "✅ Сообщение с результатами перезапущено!")
     time.sleep(3)
     safe_delete(confirm.message_id, message.chat.id)
 
@@ -483,11 +501,44 @@ def cmd_third(message):
     # Удаляем команду
     safe_delete(message.message_id, message.chat.id)
     
+    # Проверяем, есть ли активное голосование
+    if not voting_data['voting_message_id']:
+        confirm = bot.send_message(message.chat.id, "❌ Нет активного голосования. Используйте /start")
+        time.sleep(3)
+        safe_delete(confirm.message_id, message.chat.id)
+        return
+    
     # Создаем третье сообщение
     create_third_message()
     
     # Отправляем подтверждение
-    confirm = bot.reply_to(message, "✅ Третье сообщение создано!")
+    confirm = bot.send_message(message.chat.id, "✅ Третье сообщение создано!")
+    time.sleep(3)
+    safe_delete(confirm.message_id, message.chat.id)
+
+@bot.message_handler(commands=['clear'])
+def cmd_clear(message):
+    """Быстрая команда: очистка всех данных голосования"""
+    user_id = message.from_user.id
+    
+    if not is_admin(user_id, message.chat.id):
+        bot.reply_to(message, "❌ Только для администраторов!")
+        return
+    
+    # Удаляем команду
+    safe_delete(message.message_id, message.chat.id)
+    
+    # Очищаем все данные
+    voting_data['yes_voters'] = {}
+    voting_data['no_voters'] = {}
+    voting_data['plus_one_voters'] = {}
+    voting_data['user_cache'] = {}
+    
+    # Обновляем сообщения
+    update_all_messages()
+    
+    # Отправляем подтверждение
+    confirm = bot.send_message(message.chat.id, "✅ Все данные голосования очищены!")
     time.sleep(3)
     safe_delete(confirm.message_id, message.chat.id)
 
@@ -508,6 +559,7 @@ def cmd_help(message):
 🔹 /start - Запустить голосование (создает 2 сообщения)
 🔹 /restart - Перезапустить сообщение с результатами (удаляет старое)
 🔹 /third - Создать третье сообщение сейчас
+🔹 /clear - Очистить все данные голосования
 🔹 /help - Показать эту справку
 
 *Расписание:*
@@ -523,6 +575,7 @@ def cmd_help(message):
 *Примечание:*
 - Гостей можно добавлять даже без выбора ДА
 - Все сообщения обновляются автоматически
+- Голосование активно до следующего /start или 12:00 следующего дня
     """
     
     msg = bot.send_message(message.chat.id, help_text, parse_mode='Markdown')
@@ -534,8 +587,12 @@ def cmd_help(message):
 def run_scheduler():
     """Запуск планировщика в отдельном потоке"""
     while True:
-        schedule.run_pending()
-        time.sleep(1)
+        try:
+            schedule.run_pending()
+            time.sleep(1)
+        except Exception as e:
+            print(f"Ошибка планировщика: {e}")
+            time.sleep(5)
 
 def setup_scheduler():
     """Настройка расписания"""
@@ -572,6 +629,7 @@ if __name__ == "__main__":
     try:
         chat = bot.get_chat(GROUP_CHAT_ID)
         print(f"✅ Подключено к группе: {chat.title}")
+        print(f"✅ ID группы: {GROUP_CHAT_ID}")
     except Exception as e:
         print(f"⚠️ Ошибка подключения к группе: {e}")
         print("   Проверьте GROUP_CHAT_ID и права бота")
@@ -594,6 +652,6 @@ if __name__ == "__main__":
         try:
             bot.polling(none_stop=True, interval=1, timeout=30)
         except Exception as e:
-            print(f"❌ Ошибка: {e}")
+            print(f"❌ Ошибка polling: {e}")
             print("🔄 Перезапуск через 10 секунд...")
             time.sleep(10)
