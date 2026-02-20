@@ -6,1322 +6,594 @@ from threading import Thread
 from datetime import datetime
 from telebot import types
 import pytz
+import os
+import sys
 
 # ====== НАСТРОЙКИ ======
-TOKEN = "8568812025:AAHL-u8tquSPxlBW8ZEXz2wv4oi0z8R6r3U"  # Вставьте ваш токен
-GROUP_CHAT_ID = -1003559215540  # ID вашей группы (должен начинаться с -)
+TOKEN = "8568812025:AAHL-u8tquSPxlBW8ZEXz2wv4oi0z8R6r3U"  # Ваш токен
+GROUP_CHAT_ID = -1002990790597  # ID вашей группы
 
-# Время публикации (24-часовой формат, указываем МСК)
-VOTING_TIME = "12:00"  # Время отправки сообщения с кнопками (по Москве)
-NOTIFICATION_TIME = "18:00"  # Время отправки финального сообщения "Жду на Тушинской" (по Москве)
+# Время публикации (МСК)
+VOTING_TIME = "12:00"  # Время создания голосования
+NOTIFICATION_TIME = "18:00"  # Время создания третьего сообщения
 
-# Устанавливаем часовой пояс (Москва)
+# Часовой пояс Москвы
 MOSCOW_TZ = pytz.timezone('Europe/Moscow')
 
 # Список случайных имен для гостей
 GUEST_NAMES = [
-    "Шефан Карри", "ЛеБрик", "Вестбрик", "Шакал О'Нил", 
-    "Черная Мамба", "Джокер", "Грик Фрик", "Флоппер", 
-    "Просто Бен Симмонс"
+    "Шефан Карри", "ЛеБрик", "Вестбрик", "Шакал О'Нил",
+    "Черная Мамба", "Джокер", "Грик Фрик", "Флоппер",
+    "Просто Бен Симмонс", "Доктор Дрим", "Король Трэш", "Мистер Тройной Дабл"
 ]
 
-# Словарь для хранения данных о голосовании
-current_voting = {
-    'voting_message_id': None,  # ID сообщения с кнопками
-    'results_message_id': None,  # ID сообщения с результатами
-    'notification_message_id': None,  # ID финального сообщения
-    'date': None,
-    'yes_voters': {},  # user_id: user_data (основные голоса)
-    'no_voters': {},  # user_id: user_data
-    'plus_one_voters': {},  # user_id: список гостей (теперь храним списки)
-    'user_cache': {},  # Кэш данных о пользователях для тех, кто только добавляет гостей
+# Структура данных голосования
+voting_data = {
+    'voting_message_id': None,      # ID сообщения с кнопками
+    'results_message_id': None,     # ID сообщения с результатами
+    'third_message_id': None,       # ID третьего сообщения (в 18:00)
+    'yes_voters': {},               # Проголосовавшие ДА
+    'no_voters': {},                # Проголосовавшие НЕТ
+    'plus_one_voters': {},          # Гости (user_id: список гостей)
+    'user_cache': {},               # Кэш данных пользователей
+    'is_active': False              # Флаг активности голосования
 }
 
 # ====== ИНИЦИАЛИЗАЦИЯ БОТА ======
 bot = telebot.TeleBot(TOKEN)
 
-# ====== ФУНКЦИЯ ДЛЯ ПРОВЕРКИ АДМИНИСТРАТОРА ======
-def is_admin_or_owner(user_id, chat_id=GROUP_CHAT_ID):
-    """Проверяет, является ли пользователь администратором или владельцем группы"""
+# ====== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ======
+
+def safe_delete(message_id, chat_id=GROUP_CHAT_ID):
+    """Безопасное удаление сообщения"""
     try:
-        # Получаем информацию о правах пользователя в группе
-        member = bot.get_chat_member(chat_id, user_id)
-        
-        # Проверяем статус пользователя
-        # status может быть: 'creator', 'administrator', 'member', 'restricted', 'left', 'kicked'
-        if member.status in ['creator', 'administrator']:
-            return True
-        
-        return False
-    except Exception as e:
-        print(f"❌ Ошибка при проверке прав администратора: {e}")
-        return False
+        if message_id:
+            bot.delete_message(chat_id, message_id)
+    except:
+        pass
 
-# ====== ФУНКЦИЯ ДЛЯ ПОЛУЧЕНИЯ ИМЕНИ ПОЛЬЗОВАТЕЛЯ ======
-def get_user_display_name(user):
-    """Возвращает отображаемое имя пользователя в формате nickname(username)"""
-    display_name = ""
-
-    if user.first_name:
-        display_name = user.first_name
-        if user.last_name:
-            display_name += f" {user.last_name}"
-
-    if user.username:
-        if display_name:
-            display_name += f"(@{user.username})"
+def safe_edit(message_id, text, parse_mode=None, reply_markup=None, chat_id=GROUP_CHAT_ID):
+    """Безопасное редактирование сообщения"""
+    try:
+        if reply_markup is not None:
+            bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=message_id,
+                text=text,
+                parse_mode=parse_mode,
+                reply_markup=reply_markup
+            )
         else:
-            display_name = f"@{user.username}"
-    elif not display_name:
-        display_name = f"Участник {user.id}"
+            bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=message_id,
+                text=text,
+                parse_mode=parse_mode
+            )
+        return True
+    except Exception as e:
+        print(f"Ошибка редактирования: {e}")
+        return False
 
+def is_admin(user_id, chat_id=GROUP_CHAT_ID):
+    """Проверка прав администратора"""
+    try:
+        member = bot.get_chat_member(chat_id, user_id)
+        return member.status in ['creator', 'administrator']
+    except:
+        return False
+
+def get_display_name(user):
+    """Получение отображаемого имени пользователя"""
+    name_parts = []
+    if user.first_name:
+        name_parts.append(user.first_name)
+    if user.last_name:
+        name_parts.append(user.last_name)
+    
+    display_name = " ".join(name_parts) if name_parts else f"User{user.id}"
+    
+    if user.username:
+        display_name += f" (@{user.username})"
+    
     return display_name
 
-# ====== ФУНКЦИЯ ДЛЯ СОХРАНЕНИЯ ДАННЫХ ПОЛЬЗОВАТЕЛЯ ======
-def save_user_data(user):
-    """Сохраняет данные пользователя в кэш"""
+def save_user_to_cache(user):
+    """Сохранение пользователя в кэш"""
     user_id = user.id
-    display_name = get_user_display_name(user)
-
+    display_name = get_display_name(user)
+    
     user_data = {
         'user_id': user_id,
         'username': user.username,
         'first_name': user.first_name,
         'last_name': user.last_name,
         'display_name': display_name,
-        'is_bot': user.is_bot,
+        'is_bot': user.is_bot
     }
-
-    # Сохраняем в кэш для пользователей, которые только добавляют гостей
-    current_voting['user_cache'][user_id] = user_data
+    
+    voting_data['user_cache'][user_id] = user_data
     return user_data
 
-# ====== ФУНКЦИЯ ДЛЯ ПОЛУЧЕНИЯ ИМЕНИ ПОЛЬЗОВАТЕЛЯ ИЗ КЭША ======
-def get_user_display_name_from_cache(user_id):
-    """Получает отображаемое имя пользователя из кэша"""
-    if user_id in current_voting['user_cache']:
-        return current_voting['user_cache'][user_id]['display_name']
-    elif user_id in current_voting['yes_voters']:
-        return current_voting['yes_voters'][user_id]['display_name']
-    elif user_id in current_voting['no_voters']:
-        return current_voting['no_voters'][user_id]['display_name']
+def get_user_display_from_cache(user_id):
+    """Получение имени пользователя из кэша"""
+    if user_id in voting_data['user_cache']:
+        return voting_data['user_cache'][user_id]['display_name']
+    elif user_id in voting_data['yes_voters']:
+        return voting_data['yes_voters'][user_id]['display_name']
+    elif user_id in voting_data['no_voters']:
+        return voting_data['no_voters'][user_id]['display_name']
     else:
         return f"Участник {user_id}"
 
-# ====== ФУНКЦИЯ ДЛЯ УДАЛЕНИЯ СООБЩЕНИЯ ======
-def delete_message_safe(chat_id, message_id):
-    """Безопасно удаляет сообщение"""
-    try:
-        bot.delete_message(chat_id, message_id)
-    except:
-        pass
-
-# ====== ФУНКЦИЯ ДЛЯ ОБРАБОТКИ КОМАНД АДМИНА ======
-def handle_admin_command(message, command_func, *args):
-    """Обрабатывает команду администратора: удаляет сообщение и выполняет команду"""
-    # Удаляем команду
-    delete_message_safe(message.chat.id, message.message_id)
-
-    # Проверяем права администратора
-    if not is_admin_or_owner(message.from_user.id, message.chat.id):
-        # Отправляем сообщение об ошибке и удаляем его через 3 секунды
-        msg = bot.reply_to(message, "❌ Эта команда только для администраторов и владельца группы!")
-        time.sleep(3)
-        delete_message_safe(msg.chat.id, msg.message_id)
-        return
-
-    # Выполняем команду
-    try:
-        command_func(message, *args)
-    except Exception as e:
-        error_msg = bot.reply_to(message, f"❌ Ошибка: {e}")
-        time.sleep(3)
-        delete_message_safe(error_msg.chat.id, error_msg.message_id)
-
-# ====== ФУНКЦИЯ ЛОГИРОВАНИЯ ГОЛОСОВАНИЯ ======
-def log_vote(user_id, user_name, vote_type, guest_count=0):
-    """Логирует информацию о голосовании"""
+def log_action(action, user_name, details=""):
+    """Логирование действий"""
     moscow_time = datetime.now(MOSCOW_TZ).strftime("%H:%M:%S")
-    log_message = f"[{moscow_time}] "
+    print(f"[{moscow_time}] {action}: {user_name} {details}")
 
-    if vote_type == "yes":
-        log_message += f"✅ {user_name} (ID: {user_id}) проголосовал за 'Да'"
-    elif vote_type == "no":
-        log_message += f"❌ {user_name} (ID: {user_id}) проголосовал за 'Нет'"
-    elif vote_type == "plus_one":
-        log_message += f"➕ {user_name} (ID: {user_id}) добавил +1 (всего: {guest_count})"
-    elif vote_type == "minus_one":
-        log_message += f"➖ {user_name} (ID: {user_id}) убрал +1 (осталось: {guest_count})"
-    elif vote_type == "change_yes_to_no":
-        log_message += f"🔄 {user_name} (ID: {user_id}) изменил голос с 'Да' на 'Нет'"
-    elif vote_type == "change_no_to_yes":
-        log_message += f"🔄 {user_name} (ID: {user_id}) изменил голос с 'Нет' на 'Да'"
+# ====== ФУНКЦИИ ФОРМИРОВАНИЯ ТЕКСТА ======
 
-    print(log_message)
+def get_results_text():
+    """Формирование текста сообщения с результатами"""
+    text = "🏀 *РЕЗУЛЬТАТЫ ГОЛОСОВАНИЯ*\n\n"
+    text += "📋 *Полный список участников:*\n\n"
+    
+    all_participants = []
+    
+    # Добавляем проголосовавших ДА и их гостей
+    for user_id, user_data in voting_data['yes_voters'].items():
+        display_name = user_data.get('display_name', f'Участник {user_id}')
+        all_participants.append(f"✅ {display_name}")
+        
+        # Добавляем гостей этого пользователя
+        if user_id in voting_data['plus_one_voters']:
+            for guest in voting_data['plus_one_voters'][user_id]:
+                guest_name = guest.get('guest_name', 'Гость')
+                all_participants.append(f"   👥 {guest_name} (гость {display_name})")
+    
+    # Добавляем гостей от тех, кто не голосовал ДА
+    for user_id, guests in voting_data['plus_one_voters'].items():
+        if user_id not in voting_data['yes_voters']:
+            display_name = get_user_display_from_cache(user_id)
+            for guest in guests:
+                guest_name = guest.get('guest_name', 'Гость')
+                all_participants.append(f"   👥 {guest_name} (гость {display_name})")
+    
+    # Добавляем проголосовавших НЕТ
+    for user_id, user_data in voting_data['no_voters'].items():
+        display_name = user_data.get('display_name', f'Участник {user_id}')
+        all_participants.append(f"❌ {display_name}")
+    
+    # Формируем список (БЕЗ ОГРАНИЧЕНИЯ ПО КОЛИЧЕСТВУ)
+    if all_participants:
+        for i, participant in enumerate(all_participants, 1):
+            text += f"{i}. {participant}\n"
+    else:
+        text += "_Пока никто не проголосовал_ 😔\n"
+    
+    # Добавляем статистику
+    yes_count = len(voting_data['yes_voters'])
+    no_count = len(voting_data['no_voters'])
+    guests_count = sum(len(g) for g in voting_data['plus_one_voters'].values())
+    
+    text += f"\n📊 *Статистика:*\n"
+    text += f"✅ ДА: {yes_count} чел.\n"
+    text += f"❌ НЕТ: {no_count} чел.\n"
+    text += f"👥 Гостей: {guests_count} чел.\n"
+    text += f"📈 Всего идет: {yes_count + guests_count} чел."
+    
+    return text
 
-# ====== ФУНКЦИЯ СОЗДАНИЯ СООБЩЕНИЙ С КНОПКАМИ И РЕЗУЛЬТАТАМИ ======
-def create_daily_voting():
-    """Создает сообщение с кнопками и сообщение с результатами в группе в заданное время"""
-    try:
-        # Текущее время по Москве
-        moscow_now = datetime.now(MOSCOW_TZ)
+def get_voting_text():
+    """Формирование текста сообщения с кнопками"""
+    yes_count = len(voting_data['yes_voters'])
+    no_count = len(voting_data['no_voters'])
+    
+    text = "🏀 *ТРЕНИРОВКА НА ТУШИНСКОЙ*\n\n"
+    text += f"✅ ДА: {yes_count}\n"
+    text += f"❌ НЕТ: {no_count}\n\n"
+    text += "👇 *Сделайте свой выбор:*"
+    
+    return text
 
-        # Сбрасываем данные о предыдущем голосовании
-        global current_voting
-        current_voting = {
-            'voting_message_id': None,
-            'results_message_id': None,
-            'notification_message_id': None,
-            'date': moscow_now,
-            'yes_voters': {},
-            'no_voters': {},
-            'plus_one_voters': {},  # Храним списки гостей для каждого пользователя
-            'user_cache': {},  # Кэш данных о пользователях для тех, кто только добавляет гостей
-        }
+def get_third_message_text():
+    """Формирование текста третьего сообщения"""
+    text = "🏀 *Напоминание о тренировке*\n\n"
+    text += "Жду на Тушинской с 19:00\n\n"
+    
+    going = []
+    
+    # Собираем всех, кто идет
+    for user_id, user_data in voting_data['yes_voters'].items():
+        display_name = user_data.get('display_name', f'Участник {user_id}')
+        going.append(display_name)
+        
+        if user_id in voting_data['plus_one_voters']:
+            for guest in voting_data['plus_one_voters'][user_id]:
+                guest_name = guest.get('guest_name', 'Гость')
+                going.append(f"{guest_name} (гость {display_name})")
+    
+    for user_id, guests in voting_data['plus_one_voters'].items():
+        if user_id not in voting_data['yes_voters']:
+            display_name = get_user_display_from_cache(user_id)
+            for guest in guests:
+                guest_name = guest.get('guest_name', 'Гость')
+                going.append(f"{guest_name} (гость {display_name})")
+    
+    if going:
+        text += "👥 *Идут:*\n"
+        for i, person in enumerate(going, 1):
+            text += f"{i}. {person}\n"
+    else:
+        text += "😔 Пока никто не идет"
+    
+    return text
 
-        # 1. СОЗДАЕМ СООБЩЕНИЕ С КНОПКАМИ
-        keyboard = types.InlineKeyboardMarkup(row_width=2)
+# ====== ФУНКЦИИ ОБНОВЛЕНИЯ СООБЩЕНИЙ ======
 
-        # Первый ряд: основные кнопки Да/Нет
-        btn_yes = types.InlineKeyboardButton(text="✅ Да", callback_data="vote_yes")
-        btn_no = types.InlineKeyboardButton(text="❌ Нет", callback_data="vote_no")
-
-        # Второй ряд: кнопки +1 и -1
-        btn_plus_one = types.InlineKeyboardButton(text="➕ +1", callback_data="plus_one")
-        btn_minus_one = types.InlineKeyboardButton(text="➖ -1", callback_data="minus_one")
-
-        keyboard.add(btn_yes, btn_no)
-        keyboard.add(btn_plus_one, btn_minus_one)
-
-        voting_text = "🏀 *Тренировка на Тушинской сегодня*\n\nВыберите вариант:"
-        voting_message = bot.send_message(
-            chat_id=GROUP_CHAT_ID,
-            text=voting_text,
+def update_all_messages():
+    """Обновление всех сообщений"""
+    # Обновляем сообщение с кнопками
+    if voting_data['voting_message_id']:
+        keyboard = get_voting_keyboard()
+        safe_edit(
+            voting_data['voting_message_id'],
+            get_voting_text(),
             parse_mode='Markdown',
             reply_markup=keyboard
         )
-
-        # Сохраняем ID сообщения с кнопками
-        current_voting['voting_message_id'] = voting_message.message_id
-
-        # 2. СОЗДАЕМ СООБЩЕНИЕ С РЕЗУЛЬТАТАМИ (изначально пустое)
-        results_text = "🏀 *На тренировку идут:*\n\n"
-        results_text += "_Пока никто не проголосовал за 'Да'_ 😔"
-
-        results_message = bot.send_message(
-            chat_id=GROUP_CHAT_ID,
-            text=results_text,
+    
+    # Обновляем сообщение с результатами
+    if voting_data['results_message_id']:
+        safe_edit(
+            voting_data['results_message_id'],
+            get_results_text(),
+            parse_mode='Markdown'
+        )
+    
+    # Обновляем третье сообщение, если оно существует
+    if voting_data['third_message_id']:
+        safe_edit(
+            voting_data['third_message_id'],
+            get_third_message_text(),
             parse_mode='Markdown'
         )
 
-        # Сохраняем ID сообщения с результатами
-        current_voting['results_message_id'] = results_message.message_id
+def get_voting_keyboard():
+    """Создание клавиатуры для голосования"""
+    keyboard = types.InlineKeyboardMarkup(row_width=2)
+    
+    btn_yes = types.InlineKeyboardButton("✅ ДА", callback_data="vote_yes")
+    btn_no = types.InlineKeyboardButton("❌ НЕТ", callback_data="vote_no")
+    btn_plus = types.InlineKeyboardButton("➕ +1 ГОСТЬ", callback_data="plus_one")
+    btn_minus = types.InlineKeyboardButton("➖ -1 ГОСТЬ", callback_data="minus_one")
+    
+    keyboard.add(btn_yes, btn_no)
+    keyboard.add(btn_plus, btn_minus)
+    
+    return keyboard
 
-        print(f"[{moscow_now.strftime('%H:%M:%S')}] ✅ Голосование создано")
+# ====== СОЗДАНИЕ ГОЛОСОВАНИЯ ======
 
-    except Exception as e:
-        moscow_now = datetime.now(MOSCOW_TZ)
-        print(f"[{moscow_now.strftime('%H:%M:%S')}] ❌ Ошибка при создании голосования: {e}")
-
-# ====== ОБНОВЛЕНИЕ СООБЩЕНИЯ С РЕЗУЛЬТАТАМИ ======
-def update_results_message():
-    """Обновляет сообщение с результатами"""
-    if not current_voting['results_message_id']:
-        return
-
+def create_voting():
+    """Создание нового голосования"""
     try:
-        # Формируем текст сообщения
-        results_text = "🏀 *На тренировку идут:*\n\n"
-
-        # Собираем все записи тех, кто голосует за "Да" (включая их гостей)
-        all_entries = []
-
-        # Добавляем тех, кто голосует за "Да"
-        for user_id, user_data in current_voting['yes_voters'].items():
-            display_name = user_data.get('display_name', f'Участник {user_id}')
-            all_entries.append(f"{display_name}")
-
-            # Добавляем гостей этого пользователя
-            if user_id in current_voting['plus_one_voters']:
-                guest_list = current_voting['plus_one_voters'][user_id]
-                for guest_data in guest_list:
-                    guest_name = guest_data.get('guest_name', 'Гость')
-                    all_entries.append(f"{guest_name} от {display_name}")
-
-        # Теперь добавляем гостей пользователей, которые не голосовали за "Да"
-        for user_id, guest_list in current_voting['plus_one_voters'].items():
-            # Если пользователь не в списке "Да"
-            if user_id not in current_voting['yes_voters']:
-                # Получаем имя пользователя из кэша или создаем базовое
-                display_name = get_user_display_name_from_cache(user_id)
-
-                # Добавляем гостей этого пользователя
-                for guest_data in guest_list:
-                    guest_name = guest_data.get('guest_name', 'Гость')
-                    all_entries.append(f"{guest_name} от {display_name}")
-
-        if all_entries:
-            for i, entry in enumerate(all_entries, 1):
-                results_text += f"{i}. {entry}\n"
-        else:
-            results_text += "_Пока никто не проголосовал за 'Да'_ 😔"
-
-        # Обновляем сообщение с результатами
-        bot.edit_message_text(
+        # Сброс данных предыдущего голосования
+        voting_data['yes_voters'] = {}
+        voting_data['no_voters'] = {}
+        voting_data['plus_one_voters'] = {}
+        voting_data['user_cache'] = {}
+        voting_data['is_active'] = True
+        
+        # Удаляем старые сообщения, если они есть
+        if voting_data['voting_message_id']:
+            safe_delete(voting_data['voting_message_id'])
+        if voting_data['results_message_id']:
+            safe_delete(voting_data['results_message_id'])
+        if voting_data['third_message_id']:
+            safe_delete(voting_data['third_message_id'])
+        
+        # 1. СООБЩЕНИЕ С КНОПКАМИ
+        voting_msg = bot.send_message(
             chat_id=GROUP_CHAT_ID,
-            message_id=current_voting['results_message_id'],
-            text=results_text,
-            parse_mode='Markdown'
-        )
-
-        # Также обновляем уведомительное сообщение, если оно уже было создано
-        update_notification_message()
-
-        total_yes = len(current_voting['yes_voters'])
-        total_guests = sum(len(guests) for guests in current_voting['plus_one_voters'].values())
-        moscow_now = datetime.now(MOSCOW_TZ)
-        print(f"[{moscow_now.strftime('%H:%M:%S')}] 📊 Статистика: Да: {total_yes}, гостей: {total_guests}")
-
-    except Exception as e:
-        moscow_now = datetime.now(MOSCOW_TZ)
-        print(f"[{moscow_now.strftime('%H:%M:%S')}] ❌ Ошибка при обновлении сообщения с результатами: {e}")
-
-# ====== ОБНОВЛЕНИЕ СООБЩЕНИЯ С КНОПКАМИ ======
-def update_voting_message():
-    """Обновляет сообщение с кнопками, показывая текущие результаты"""
-    if not current_voting['voting_message_id']:
-        return
-
-    try:
-        # Подсчитываем результаты
-        yes_count = len(current_voting['yes_voters'])
-        no_count = len(current_voting['no_voters'])
-        total_guests = sum(len(guests) for guests in current_voting['plus_one_voters'].values())
-        total_people = yes_count + total_guests
-
-        # Формируем обновленный текст (как было раньше)
-        message_text = f"🏀 *Тренировка на Тушинской сегодня*\n\n"
-        message_text += f"✅ Да: {yes_count} человек\n"
-        message_text += f"❌ Нет: {no_count} человек\n"
-        message_text += f"👥 Всего: {yes_count + no_count}\n\n"
-        message_text += "Выберите вариант:"
-
-        # Создаем клавиатуру с кнопками
-        keyboard = types.InlineKeyboardMarkup(row_width=2)
-
-        # Первый ряд: основные кнопки Да/Нет
-        btn_yes = types.InlineKeyboardButton(text="✅ Да", callback_data="vote_yes")
-        btn_no = types.InlineKeyboardButton(text="❌ Нет", callback_data="vote_no")
-
-        # Второй ряд: кнопки +1 и -1
-        btn_plus_one = types.InlineKeyboardButton(text="➕ +1", callback_data="plus_one")
-        btn_minus_one = types.InlineKeyboardButton(text="➖ -1", callback_data="minus_one")
-
-        keyboard.add(btn_yes, btn_no)
-        keyboard.add(btn_plus_one, btn_minus_one)
-
-        # Обновляем сообщение
-        bot.edit_message_text(
-            chat_id=GROUP_CHAT_ID,
-            message_id=current_voting['voting_message_id'],
-            text=message_text,
+            text=get_voting_text(),
             parse_mode='Markdown',
-            reply_markup=keyboard
+            reply_markup=get_voting_keyboard()
         )
-
-    except Exception as e:
-        moscow_now = datetime.now(MOSCOW_TZ)
-        print(f"[{moscow_now.strftime('%H:%M:%S')}] ❌ Ошибка при обновлении сообщения с кнопками: {e}")
-
-# ====== ФУНКЦИЯ ДЛЯ ОБНОВЛЕНИЯ УВЕДОМИТЕЛЬНОГО СООБЩЕНИЯ ======
-def update_notification_message():
-    """Обновляет уведомительное сообщение (третье сообщение)"""
-    if not current_voting['notification_message_id']:
-        return
-
-    try:
-        # Получаем список всех, кто идет (Да + гости)
-        all_going = []
-
-        # Те, кто голосует за "Да"
-        for user_id, user_data in current_voting['yes_voters'].items():
-            display_name = user_data.get('display_name', f'Участник {user_id}')
-            all_going.append(display_name)
-
-            # Добавляем гостей этого пользователя
-            if user_id in current_voting['plus_one_voters']:
-                guest_list = current_voting['plus_one_voters'][user_id]
-                for guest_data in guest_list:
-                    guest_name = guest_data.get('guest_name', 'Гость')
-                    all_going.append(f"{guest_name} от {display_name}")
-
-        # Теперь добавляем гостей пользователей, которые не голосовали за "Да"
-        for user_id, guest_list in current_voting['plus_one_voters'].items():
-            # Если пользователь не в списке "Да"
-            if user_id not in current_voting['yes_voters']:
-                # Получаем имя пользователя из кэша
-                display_name = get_user_display_name_from_cache(user_id)
-
-                # Добавляем гостей этого пользователя
-                for guest_data in guest_list:
-                    guest_name = guest_data.get('guest_name', 'Гость')
-                    all_going.append(f"{guest_name} от {display_name}")
-
-        # Формируем текст уведомительного сообщения
-        notification_text = "Жду на Тушинской с 19:00"
-
-        if all_going:
-            for entry in all_going:
-                notification_text += f", {entry}"
-        else:
-            notification_text += " (пока никто)"
-
-        # Обновляем сообщение
-        bot.edit_message_text(
+        voting_data['voting_message_id'] = voting_msg.message_id
+        
+        # 2. СООБЩЕНИЕ С РЕЗУЛЬТАТАМИ
+        results_msg = bot.send_message(
             chat_id=GROUP_CHAT_ID,
-            message_id=current_voting['notification_message_id'],
-            text=notification_text,
-            parse_mode=None  # Без разметки
+            text=get_results_text(),
+            parse_mode='Markdown'
         )
-
-    except Exception as e:
+        voting_data['results_message_id'] = results_msg.message_id
+        
         moscow_now = datetime.now(MOSCOW_TZ)
-        print(f"[{moscow_now.strftime('%H:%M:%S')}] ❌ Ошибка при обновлении уведомительного сообщения: {e}")
+        print(f"[{moscow_now.strftime('%H:%M:%S')}] ✅ ГОЛОСОВАНИЕ СОЗДАНО")
+        
+    except Exception as e:
+        print(f"❌ Ошибка создания голосования: {e}")
 
-# ====== ФУНКЦИЯ ДЛЯ СОЗДАНИЯ УВЕДОМИТЕЛЬНОГО СООБЩЕНИЯ ======
-def create_notification_message():
-    """Создает уведомительное сообщение в заданное время ТОЛЬКО ПО СУББОТАМ"""
-    # Проверяем, что сегодня суббота
-    moscow_now = datetime.now(MOSCOW_TZ)
-    if moscow_now.weekday() != 5:  # 0 - понедельник, 5 - суббота
-        print(f"[{moscow_now.strftime('%H:%M:%S')}] 📅 Сегодня не суббота, уведомление не отправляется")
+def create_third_message():
+    """Создание третьего сообщения (в 18:00)"""
+    try:
+        # Если третье сообщение уже существует, удаляем его
+        if voting_data['third_message_id']:
+            safe_delete(voting_data['third_message_id'])
+            voting_data['third_message_id'] = None
+        
+        # Создаем новое третье сообщение
+        third_msg = bot.send_message(
+            chat_id=GROUP_CHAT_ID,
+            text=get_third_message_text(),
+            parse_mode='Markdown'
+        )
+        voting_data['third_message_id'] = third_msg.message_id
+        
+        moscow_now = datetime.now(MOSCOW_TZ)
+        print(f"[{moscow_now.strftime('%H:%M:%S')}] 📢 ТРЕТЬЕ СООБЩЕНИЕ СОЗДАНО")
+        
+    except Exception as e:
+        print(f"❌ Ошибка создания третьего сообщения: {e}")
+
+# ====== ОБРАБОТЧИК НАЖАТИЙ КНОПОК ======
+
+@bot.callback_query_handler(func=lambda call: True)
+def handle_callback(call):
+    """Обработка нажатий на кнопки"""
+    if not voting_data['is_active']:
+        bot.answer_callback_query(call.id, "❌ Голосование не активно", show_alert=True)
         return
     
-    try:
-        # Получаем список всех, кто идет (Да + гости)
-        all_going = []
-
-        # Те, кто голосует за "Да"
-        for user_id, user_data in current_voting['yes_voters'].items():
-            display_name = user_data.get('display_name', f'Участник {user_id}')
-            all_going.append(display_name)
-
-            # Добавляем гостей этого пользователя
-            if user_id in current_voting['plus_one_voters']:
-                guest_list = current_voting['plus_one_voters'][user_id]
-                for guest_data in guest_list:
-                    guest_name = guest_data.get('guest_name', 'Гость')
-                    all_going.append(f"{guest_name} от {display_name}")
-
-        # Теперь добавляем гостей пользователей, которые не голосовали за "Да"
-        for user_id, guest_list in current_voting['plus_one_voters'].items():
-            # Если пользователь не в списке "Да"
-            if user_id not in current_voting['yes_voters']:
-                # Получаем имя пользователя из кэша
-                display_name = get_user_display_name_from_cache(user_id)
-
-                # Добавляем гостей этого пользователя
-                for guest_data in guest_list:
-                    guest_name = guest_data.get('guest_name', 'Гость')
-                    all_going.append(f"{guest_name} от {display_name}")
-
-        # Формируем текст уведомительного сообщения
-        notification_text = "Жду на Тушинской с 19:00"
-
-        if all_going:
-            for entry in all_going:
-                notification_text += f", {entry}"
-        else:
-            notification_text += " (пока никто)"
-
-        # Отправляем сообщение
-        notification_message = bot.send_message(
-            chat_id=GROUP_CHAT_ID,
-            text=notification_text,
-            parse_mode=None  # Без разметки
-        )
-
-        # Сохраняем ID уведомительного сообщения
-        current_voting['notification_message_id'] = notification_message.message_id
-
-        print(f"[{moscow_now.strftime('%H:%M:%S')}] 📢 Уведомительное сообщение создано (только по субботам)")
-
-    except Exception as e:
-        moscow_now = datetime.now(MOSCOW_TZ)
-        print(f"[{moscow_now.strftime('%H:%M:%S')}] ❌ Ошибка при создании уведомительного сообщения: {e}")
-
-# ====== ОБРАБОТЧИК НАЖАТИЯ КНОПОК ======
-@bot.callback_query_handler(func=lambda call: True)
-def handle_button_click(call):
-    """Обрабатывает нажатия на кнопки"""
     user_id = call.from_user.id
-    user = call.from_user  # Объект пользователя
-
-    # Получаем отображаемое имя
-    display_name = get_user_display_name(user)
-
+    user = call.from_user
+    display_name = get_display_name(user)
+    
+    # Сохраняем пользователя в кэш
+    save_user_to_cache(user)
+    
     if call.data == "vote_yes":
-        # Убираем из "Нет" если пользователь там был
-        was_no = user_id in current_voting['no_voters']
-        if was_no:
-            del current_voting['no_voters'][user_id]
-
-        # Сохраняем данные пользователя
-        save_user_data(user)
-
-        # Добавляем в "Да" с полной информацией
-        user_data = {
-            'user_id': user_id,
-            'username': user.username,
-            'first_name': user.first_name,
-            'last_name': user.last_name,
-            'display_name': display_name,
-            'is_bot': user.is_bot,
-        }
-        current_voting['yes_voters'][user_id] = user_data
-
-        # Отправляем подтверждение
-        bot.answer_callback_query(
-            callback_query_id=call.id,
-            text="✅ Вы выбрали 'Да'!",
-            show_alert=False
-        )
-
-        # Логируем голос
-        if was_no:
-            log_vote(user_id, display_name, "change_no_to_yes")
-        else:
-            log_vote(user_id, display_name, "yes")
-
+        # Удаляем из НЕТ, если был там
+        if user_id in voting_data['no_voters']:
+            del voting_data['no_voters'][user_id]
+        
+        # Добавляем в ДА
+        voting_data['yes_voters'][user_id] = voting_data['user_cache'][user_id]
+        
+        bot.answer_callback_query(call.id, "✅ Вы выбрали ДА!", show_alert=False)
+        log_action("✅ ДА", display_name)
+        
     elif call.data == "vote_no":
-        # Убираем из "Да" если пользователь там был
-        was_yes = user_id in current_voting['yes_voters']
-        if was_yes:
-            del current_voting['yes_voters'][user_id]
-            # НЕ удаляем его гостей, даже если он уходит из "Да"
-            # Теперь гости могут быть и без "Да"
-
-        # Сохраняем данные пользователя
-        save_user_data(user)
-
-        # Добавляем в "Нет" с полной информацией
-        user_data = {
-            'user_id': user_id,
-            'username': user.username,
-            'first_name': user.first_name,
-            'last_name': user.last_name,
-            'display_name': display_name,
-            'is_bot': user.is_bot
-        }
-        current_voting['no_voters'][user_id] = user_data
-
-        # Отправляем подтверждение
-        bot.answer_callback_query(
-            callback_query_id=call.id,
-            text="❌ Вы выбрали 'Нет'!",
-            show_alert=False
-        )
-
-        # Логируем голос
-        if was_yes:
-            log_vote(user_id, display_name, "change_yes_to_no")
-        else:
-            log_vote(user_id, display_name, "no")
-
+        # Удаляем из ДА, если был там
+        if user_id in voting_data['yes_voters']:
+            del voting_data['yes_voters'][user_id]
+        
+        # Добавляем в НЕТ
+        voting_data['no_voters'][user_id] = voting_data['user_cache'][user_id]
+        
+        bot.answer_callback_query(call.id, "❌ Вы выбрали НЕТ!", show_alert=False)
+        log_action("❌ НЕТ", display_name)
+        
     elif call.data == "plus_one":
-        # МОЖНО добавлять гостей БЕЗ выбора "Да"
-
-        # Сохраняем данные пользователя в кэш
-        save_user_data(user)
-
-        # Получаем или создаем список гостей для этого пользователя
-        if user_id not in current_voting['plus_one_voters']:
-            current_voting['plus_one_voters'][user_id] = []
-
-        # Выбираем случайное имя из списка
+        # Добавление гостя
+        if user_id not in voting_data['plus_one_voters']:
+            voting_data['plus_one_voters'][user_id] = []
+        
         guest_name = random.choice(GUEST_NAMES)
-
-        # Добавляем нового гостя в список
         guest_data = {
             'guest_name': guest_name,
             'host_name': display_name,
             'host_id': user_id,
             'timestamp': datetime.now(MOSCOW_TZ)
         }
-        current_voting['plus_one_voters'][user_id].append(guest_data)
-
-        # Номер гостя (сколько уже добавил)
-        guest_count = len(current_voting['plus_one_voters'][user_id])
-
-        # Отправляем подтверждение
+        
+        voting_data['plus_one_voters'][user_id].append(guest_data)
+        guest_count = len(voting_data['plus_one_voters'][user_id])
+        
         bot.answer_callback_query(
-            callback_query_id=call.id,
-            text=f"✅ Добавлен гость: {guest_name}! Всего гостей: {guest_count}",
+            call.id,
+            f"✅ Добавлен гость: {guest_name}\nВсего гостей: {guest_count}",
             show_alert=False
         )
-
-        # Логируем голос
-        log_vote(user_id, display_name, "plus_one", guest_count)
-
+        log_action("➕ ГОСТЬ", display_name, f"({guest_name})")
+        
     elif call.data == "minus_one":
-        # Проверяем только наличие добавленных гостей
-        if user_id not in current_voting['plus_one_voters'] or not current_voting['plus_one_voters'][user_id]:
-            bot.answer_callback_query(
-                callback_query_id=call.id,
-                text="❌ У вас нет добавленных гостей!",
-                show_alert=True
-            )
+        # Удаление последнего гостя
+        if user_id not in voting_data['plus_one_voters'] or not voting_data['plus_one_voters'][user_id]:
+            bot.answer_callback_query(call.id, "❌ У вас нет гостей!", show_alert=True)
             return
-
-        # Удаляем последнего добавленного гостя
-        guest_list = current_voting['plus_one_voters'][user_id]
-        removed_guest = guest_list.pop()
-        guest_name = removed_guest.get('guest_name', 'не указан')
-
-        # Если список гостей стал пустым, удаляем запись пользователя
-        if not guest_list:
-            del current_voting['plus_one_voters'][user_id]
-
-        # Оставшееся количество гостей
-        remaining_guests = len(current_voting['plus_one_voters'].get(user_id, []))
-
-        # Отправляем подтверждение
-        confirmation_text = f"✅ Убран гость: {guest_name}"
-        if remaining_guests > 0:
-            confirmation_text += f"\nОсталось гостей: {remaining_guests}"
-
-        bot.answer_callback_query(
-            callback_query_id=call.id,
-            text=confirmation_text,
-            show_alert=False
-        )
-
-        # Логируем голос
-        log_vote(user_id, display_name, "minus_one", remaining_guests)
-
-    # ОБНОВЛЯЕМ ВСЕ СООБЩЕНИЯ ПОСЛЕ КАЖДОГО ДЕЙСТВИЯ
-    update_voting_message()
-    update_results_message()
-
-# ====== КОМАНДА ДЛЯ РУЧНОГО ДОБАВЛЕНИЯ ПОЛЬЗОВАТЕЛЕЙ ======
-@bot.message_handler(commands=['add_yes'])
-def add_yes_manually(message):
-    """Ручное добавление пользователя в список 'Да'"""
-    handle_admin_command(message, _add_yes_manually_impl)
-
-def _add_yes_manually_impl(message):
-    """Реализация команды добавления пользователя в список 'Да'"""
-    try:
-        # Получаем аргументы из команды
-        parts = message.text.split(maxsplit=3)
-        if len(parts) < 2:
-            msg = bot.reply_to(message, "❌ Используйте: /add_yes nickname [username] [гости]\nПример: /add_yes Иван ivan123 2\nИли: /add_yes @username")
-            time.sleep(3)
-            delete_message_safe(msg.chat.id, msg.message_id)
-            return
-
-        nickname = parts[1].replace('@', '')  # Убираем @ если есть
-
-        # Пытаемся получить username из второго аргумента (если есть)
-        username = None
-        guest_count = 0
-
-        if len(parts) > 2:
-            # Проверяем, является ли второй аргумент числом (количеством гостей)
-            if parts[2].isdigit():
-                guest_count = int(parts[2])
-            else:
-                username = parts[2].replace('@', '')
-                # Проверяем третий аргумент на количество гостей
-                if len(parts) > 3 and parts[3].isdigit():
-                    guest_count = int(parts[3])
-
-        # Формируем отображаемое имя в формате nickname(username)
-        if username:
-            display_name = f"{nickname}(@{username})"
-        else:
-            # Проверяем, похоже ли на username (без русских букв)
-            if any(c.isalpha() and ord(c) > 127 for c in nickname):
-                # Есть русские буквы - считаем nickname
-                display_name = nickname
-            else:
-                # Нет русских букв - считаем username
-                display_name = f"@{nickname}"
-
-        # Генерируем фиктивный ID (отрицательный для ручных добавлений)
-        fake_user_id = -len(current_voting['yes_voters']) - 1000
-
-        # Сохраняем в кэш
-        current_voting['user_cache'][fake_user_id] = {
-            'user_id': fake_user_id,
-            'username': username,
-            'first_name': nickname if username else None,
-            'last_name': None,
-            'display_name': display_name,
-            'is_bot': False,
-            'added_manually': True,
-        }
-
-        # Добавляем в список "Да"
-        current_voting['yes_voters'][fake_user_id] = current_voting['user_cache'][fake_user_id]
-
-        # Добавляем гостей, если указано
-        if guest_count > 0:
-            if fake_user_id not in current_voting['plus_one_voters']:
-                current_voting['plus_one_voters'][fake_user_id] = []
-
-            for i in range(guest_count):
-                guest_name = random.choice(GUEST_NAMES)
-                current_voting['plus_one_voters'][fake_user_id].append({
-                    'guest_name': guest_name,
-                    'host_name': display_name,
-                    'host_id': fake_user_id,
-                    'added_manually': True
-                })
-
-        # Логируем ручное добавление
-        moscow_now = datetime.now(MOSCOW_TZ)
-        if guest_count > 0:
-            print(f"[{moscow_now.strftime('%H:%M:%S')}] 👑 АДМИН добавил вручную: {display_name} -> 'Да' с {guest_count} гостями")
-        else:
-            print(f"[{moscow_now.strftime('%H:%M:%S')}] 👑 АДМИН добавил вручную: {display_name} -> 'Да'")
-
-        # Обновляем сообщения
-        update_voting_message()
-        update_results_message()
-
-        # Отправляем подтверждение и удаляем через 3 секунды
-        if guest_count > 0:
-            msg = bot.reply_to(message, f"✅ Пользователь '{display_name}' добавлен в список 'Да' с {guest_count} гостями")
-        else:
-            msg = bot.reply_to(message, f"✅ Пользователь '{display_name}' добавлен в список 'Да'")
-        time.sleep(3)
-        delete_message_safe(msg.chat.id, msg.message_id)
-
-    except Exception as e:
-        error_msg = bot.reply_to(message, f"❌ Ошибка: {e}")
-        time.sleep(3)
-        delete_message_safe(error_msg.chat.id, error_msg.message_id)
-
-# ====== КОМАНДА ДЛЯ УДАЛЕНИЯ ПОЛЬЗОВАТЕЛЯ ======
-@bot.message_handler(commands=['remove'])
-def remove_voter(message):
-    """Удалить пользователя из списка"""
-    handle_admin_command(message, _remove_voter_impl)
-
-def _remove_voter_impl(message):
-    """Реализация команды удаления пользователя"""
-    try:
-        parts = message.text.split()
-        if len(parts) < 2:
-            msg = bot.reply_to(message, "❌ Используйте: /remove имя\nМожно использовать часть имени или username")
-            time.sleep(3)
-            delete_message_safe(msg.chat.id, msg.message_id)
-            return
-
-        search_term = parts[1].replace('@', '').lower()
-
-        # Ищем и удаляем пользователя из всех списков
-        removed = False
-        removed_name = ""
-        list_type = ""
-
-        # Ищем в "Да"
-        for user_id, user_data in list(current_voting['yes_voters'].items()):
-            display_name = user_data.get('display_name', '').lower()
-            username = user_data.get('username', '').lower() if user_data.get('username') else ''
-            first_name = user_data.get('first_name', '').lower() if user_data.get('first_name') else ''
-
-            if (search_term in display_name or
-                search_term in username or
-                search_term in first_name):
-
-                del current_voting['yes_voters'][user_id]
-                # Также удаляем его гостей, если они есть
-                if user_id in current_voting['plus_one_voters']:
-                    guest_count = len(current_voting['plus_one_voters'][user_id])
-                    del current_voting['plus_one_voters'][user_id]
-                    removed = True
-                    removed_name = user_data.get('display_name', 'Unknown')
-                    list_type = "'Да'"
-                    if guest_count > 0:
-                        removed_name += f" (+{guest_count})"
-                else:
-                    removed = True
-                    removed_name = user_data.get('display_name', 'Unknown')
-                    list_type = "'Да'"
-                break
-
-        # Ищем в "Нет"
-        if not removed:
-            for user_id, user_data in list(current_voting['no_voters'].items()):
-                display_name = user_data.get('display_name', '').lower()
-                username = user_data.get('username', '').lower() if user_data.get('username') else ''
-                first_name = user_data.get('first_name', '').lower() if user_data.get('first_name') else ''
-
-                if (search_term in display_name or
-                    search_term in username or
-                    search_term in first_name):
-
-                    del current_voting['no_voters'][user_id]
-                    removed = True
-                    removed_name = user_data.get('display_name', 'Unknown')
-                    list_type = "'Нет'"
-                    break
-
-        # Ищем в кэше (пользователи, которые только добавляли гостей)
-        if not removed:
-            for user_id, user_data in list(current_voting['user_cache'].items()):
-                display_name = user_data.get('display_name', '').lower()
-                username = user_data.get('username', '').lower() if user_data.get('username') else ''
-                first_name = user_data.get('first_name', '').lower() if user_data.get('first_name') else ''
-
-                if (search_term in display_name or
-                    search_term in username or
-                    search_term in first_name):
-
-                    # Удаляем из кэша
-                    del current_voting['user_cache'][user_id]
-                    # Удаляем его гостей, если они есть
-                    if user_id in current_voting['plus_one_voters']:
-                        guest_count = len(current_voting['plus_one_voters'][user_id])
-                        del current_voting['plus_one_voters'][user_id]
-                        removed = True
-                        removed_name = user_data.get('display_name', 'Unknown')
-                        list_type = "'Только гости'"
-                        if guest_count > 0:
-                            removed_name += f" (+{guest_count})"
-                    break
-
-        if removed:
-            # Логируем удаление
-            moscow_now = datetime.now(MOSCOW_TZ)
-            print(f"[{moscow_now.strftime('%H:%M:%S')}] 👑 АДМИН удалил: {removed_name} из списка {list_type}")
-
-            update_voting_message()
-            update_results_message()
-
-            # Отправляем подтверждение и удаляем через 3 секунды
-            msg = bot.reply_to(message, f"✅ Пользователь '{removed_name}' удален из списка {list_type}")
-            time.sleep(3)
-            delete_message_safe(msg.chat.id, msg.message_id)
-        else:
-            msg = bot.reply_to(message, f"❌ Пользователь не найден")
-            time.sleep(3)
-            delete_message_safe(msg.chat.id, msg.message_id)
-
-    except Exception as e:
-        error_msg = bot.reply_to(message, f"❌ Ошибка: {e}")
-        time.sleep(3)
-        delete_message_safe(error_msg.chat.id, error_msg.message_id)
-
-# ====== КОМАНДА ДЛЯ ПРОСМОТРА ТЕКУЩЕЙ СТАТИСТИКИ ======
-@bot.message_handler(commands=['stats'])
-def show_stats(message):
-    """Показать текущую статистику голосования"""
-    handle_admin_command(message, _show_stats_impl)
-
-def _show_stats_impl(message):
-    """Реализация команды показа статистики"""
-    yes_count = len(current_voting['yes_voters'])
-    no_count = len(current_voting['no_voters'])
-    total_guests = sum(len(guests) for guests in current_voting['plus_one_voters'].values())
-    total_people = yes_count + total_guests
-
-    # ДОБАВЛЯЕМ: Информация о пользователях с только гостями
-    users_with_only_guests = sum(1 for user_id in current_voting['plus_one_voters']
-                                 if user_id not in current_voting['yes_voters'])
-
-    stats_text = f"📊 *Текущая статистика голосования:*\n\n"
-    stats_text += f"✅ Да: {yes_count} человек\n"
-    stats_text += f"❌ Нет: {no_count} человек\n"
-    stats_text += f"➕ Гостей: {total_guests} человек\n"
-    stats_text += f"👥 Всего идут: {total_people} человек\n"
-
-    if users_with_only_guests > 0:
-        stats_text += f"👥 Только гости (без 'Да'): {users_with_only_guests} чел.\n"
-
-    stats_text += "\n"
-
-    if yes_count > 0:
-        stats_text += "*Проголосовали 'Да':*\n"
-        for i, user_data in enumerate(current_voting['yes_voters'].values(), 1):
-            display_name = user_data.get('display_name', 'Unknown')
-            user_id = user_data.get('user_id')
-            guest_count = len(current_voting['plus_one_voters'].get(user_id, []))
-            if guest_count > 0:
-                stats_text += f"{i}. {display_name} (+{guest_count})\n"
-            else:
-                stats_text += f"{i}. {display_name}\n"
-
-    # Отправляем статистику
-    msg = bot.reply_to(message, stats_text, parse_mode='Markdown')
-    # Не удаляем статистику автоматически
-
-# ====== КОМАНДА ДЛА ПОКАЗА СПИСКА ВСЕХ ГОЛОСОВАВШИХ ======
-@bot.message_handler(commands=['list'])
-def show_all_voters(message):
-    """Показать всех проголосовавших"""
-    handle_admin_command(message, _show_all_voters_impl)
-
-def _show_all_voters_impl(message):
-    """Реализация команды показа всех голосовавших"""
-    yes_count = len(current_voting['yes_voters'])
-    no_count = len(current_voting['no_voters'])
-    total_guests = sum(len(guests) for guests in current_voting['plus_one_voters'].values())
-
-    response = "👥 *Все проголосовавшие:*\n\n"
-
-    if yes_count > 0:
-        response += "✅ *За 'Да':*\n"
-        for i, user_data in enumerate(current_voting['yes_voters'].values(), 1):
-            display_name = user_data.get('display_name', 'Unknown')
-            user_id = user_data.get('user_id', '?')
-            guest_list = current_voting['plus_one_voters'].get(user_id, [])
-
-            response += f"{i}. {display_name} (ID: {user_id})\n"
-
-            # Добавляем гостей этого пользователя
-            for j, guest_data in enumerate(guest_list, 1):
-                guest_name = guest_data.get('guest_name', 'Гость')
-                response += f"   └ {guest_name} от {display_name}\n"
-        response += "\n"
-
-    if no_count > 0:
-        response += "❌ *За 'Нет':*\n"
-        for i, user_data in enumerate(current_voting['no_voters'].values(), 1):
-            display_name = user_data.get('display_name', 'Unknown')
-            user_id = user_data.get('user_id', '?')
-            response += f"{i}. {display_name} (ID: {user_id})\n"
-
-    # ДОБАВЛЯЕМ: Пользователи только с гостями (без "Да")
-    users_with_only_guests = [(user_id, guest_list) for user_id, guest_list in
-                               current_voting['plus_one_voters'].items()
-                               if user_id not in current_voting['yes_voters']]
-
-    if users_with_only_guests:
-        response += "👥 *Только гости (без 'Да'):*\n"
-        for i, (user_id, guest_list) in enumerate(users_with_only_guests, 1):
-            # Получаем имя пользователя из кэша
-            if user_id in current_voting['user_cache']:
-                user_display_name = current_voting['user_cache'][user_id].get('display_name',
-                                                                               f'Участник {user_id}')
-            elif user_id in current_voting['no_voters']:
-                user_display_name = current_voting['no_voters'][user_id].get('display_name',
-                                                                              f'Участник {user_id}')
-            else:
-                user_display_name = f"Участник {user_id}"
-
-            response += f"{i}. {user_display_name} (ID: {user_id})\n"
-
-            # Добавляем его гостей
-            for j, guest_data in enumerate(guest_list, 1):
-                guest_name = guest_data.get('guest_name', 'Гость')
-                response += f"   └ {guest_name} от {user_display_name}\n"
-
-    if yes_count == 0 and no_count == 0 and not users_with_only_guests:
-        response += "Пока никто не проголосовал"
-
-    msg = bot.reply_to(message, response, parse_mode='Markdown')
-    # Не удаляем список автоматически
-
-# ====== КОМАНДА ДЛЯ ЗАКРЫТИЯ ГОЛОСОВАНИЯ ======
-@bot.message_handler(commands=['close'])
-def close_voting(message):
-    """Закрыть голосование (убрать кнопки)"""
-    handle_admin_command(message, _close_voting_impl)
-
-def _close_voting_impl(message):
-    """Реализация команды закрытия голосования"""
-    try:
-        if not current_voting['voting_message_id']:
-            msg = bot.reply_to(message, "❌ Нет активного голосования")
-            time.sleep(3)
-            delete_message_safe(msg.chat.id, msg.message_id)
-            return
-
-        # Подсчитываем финальные результаты
-        yes_count = len(current_voting['yes_voters'])
-        no_count = len(current_voting['no_voters'])
-        total_guests = sum(len(guests) for guests in current_voting['plus_one_voters'].values())
-        total_people = yes_count + total_guests
-
-        # Формируем финальный текст для сообщения с кнопками (как было раньше)
-        final_text = f"🏀 *Тренировка на Тушинской сегодня*\n\n"
-        final_text += f"✅ Да: {yes_count} человек\n"
-        final_text += f"❌ Нет: {no_count} человек\n"
-        final_text += f"👥 Всего: {yes_count + no_count}\n\n"
-        final_text += "*Голосование завершено* ✅"
-
-        # Убираем кнопки (пустая клавиатура)
-        keyboard = types.InlineKeyboardMarkup()
-
-        # Обновляем сообщение с кнопками
-        bot.edit_message_text(
+        
+        removed = voting_data['plus_one_voters'][user_id].pop()
+        guest_name = removed.get('guest_name', 'Гость')
+        
+        if not voting_data['plus_one_voters'][user_id]:
+            del voting_data['plus_one_voters'][user_id]
+        
+        bot.answer_callback_query(call.id, f"✅ Убран гость: {guest_name}", show_alert=False)
+        log_action("➖ ГОСТЬ", display_name, f"(удален {guest_name})")
+    
+    # Обновляем все сообщения
+    update_all_messages()
+
+# ====== КОМАНДЫ АДМИНИСТРАТОРОВ ======
+
+@bot.message_handler(commands=['start'])
+def cmd_start(message):
+    """Быстрая команда: запуск голосования"""
+    user_id = message.from_user.id
+    
+    # Проверка прав администратора
+    if not is_admin(user_id, message.chat.id):
+        bot.reply_to(message, "❌ Только для администраторов!")
+        return
+    
+    # Удаляем команду
+    safe_delete(message.message_id, message.chat.id)
+    
+    # Создаем голосование
+    create_voting()
+    
+    # Отправляем подтверждение (удаляется через 3 сек)
+    confirm = bot.reply_to(message, "✅ Голосование запущено!")
+    time.sleep(3)
+    safe_delete(confirm.message_id, message.chat.id)
+
+@bot.message_handler(commands=['restart'])
+def cmd_restart(message):
+    """Быстрая команда: перезапуск сообщения с результатами"""
+    user_id = message.from_user.id
+    
+    if not is_admin(user_id, message.chat.id):
+        bot.reply_to(message, "❌ Только для администраторов!")
+        return
+    
+    # Удаляем команду
+    safe_delete(message.message_id, message.chat.id)
+    
+    # Удаляем старое сообщение с результатами, если оно есть
+    if voting_data['results_message_id']:
+        safe_delete(voting_data['results_message_id'])
+        voting_data['results_message_id'] = None
+    
+    # Создаем новое сообщение с результатами
+    if voting_data['is_active']:
+        results_msg = bot.send_message(
             chat_id=GROUP_CHAT_ID,
-            message_id=current_voting['voting_message_id'],
-            text=final_text,
-            parse_mode='Markdown',
-            reply_markup=keyboard
-        )
-
-        # Формируем финальный список
-        all_entries = []
-
-        # Те, кто голосует за "Да" (включая их гостей)
-        for user_id, user_data in current_voting['yes_voters'].items():
-            display_name = user_data.get('display_name', 'Unknown')
-            all_entries.append(f"{display_name}")
-
-            # Добавляем гостей этого пользователя
-            if user_id in current_voting['plus_one_voters']:
-                guest_list = current_voting['plus_one_voters'][user_id]
-                for guest_data in guest_list:
-                    guest_name = guest_data.get('guest_name', 'Гость')
-                    all_entries.append(f"{guest_name} от {display_name}")
-
-        # Теперь добавляем гостей пользователей, которые не голосовали за "Да"
-        for user_id, guest_list in current_voting['plus_one_voters'].items():
-            # Если пользователь не в списке "Да"
-            if user_id not in current_voting['yes_voters']:
-                # Получаем имя пользователя из кэша
-                display_name = get_user_display_name_from_cache(user_id)
-
-                # Добавляем гостей этого пользователя
-                for guest_data in guest_list:
-                    guest_name = guest_data.get('guest_name', 'Гость')
-                    all_entries.append(f"{guest_name} от {display_name}")
-
-        # Обновляем сообщение с результатами (делаем его неизменяемым)
-        final_results_text = "🏀 *На тренировку идут:*\n\n"
-
-        if all_entries:
-            for i, entry in enumerate(all_entries, 1):
-                final_results_text += f"{i}. {entry}\n"
-            final_results_text += f"\n_Итого: {total_people} человек_"
-        else:
-            final_results_text += "_Никто не идет на тренировку_ 😔"
-
-        bot.edit_message_text(
-            chat_id=GROUP_CHAT_ID,
-            message_id=current_voting['results_message_id'],
-            text=final_results_text,
+            text=get_results_text(),
             parse_mode='Markdown'
         )
+        voting_data['results_message_id'] = results_msg.message_id
+    
+    # Отправляем подтверждение
+    confirm = bot.reply_to(message, "✅ Сообщение с результатами перезапущено!")
+    time.sleep(3)
+    safe_delete(confirm.message_id, message.chat.id)
 
-        # Логируем закрытие голосования
-        moscow_now = datetime.now(MOSCOW_TZ)
-        print(f"[{moscow_now.strftime('%H:%M:%S')}] 🏁 Голосование закрыто админом")
+@bot.message_handler(commands=['third'])
+def cmd_third(message):
+    """Быстрая команда: создать третье сообщение сейчас"""
+    user_id = message.from_user.id
+    
+    if not is_admin(user_id, message.chat.id):
+        bot.reply_to(message, "❌ Только для администраторов!")
+        return
+    
+    # Удаляем команду
+    safe_delete(message.message_id, message.chat.id)
+    
+    # Создаем третье сообщение
+    create_third_message()
+    
+    # Отправляем подтверждение
+    confirm = bot.reply_to(message, "✅ Третье сообщение создано!")
+    time.sleep(3)
+    safe_delete(confirm.message_id, message.chat.id)
 
-        # Отправляем подтверждение и удаляем через 3 секунды
-        msg = bot.reply_to(message, "✅ Голосование закрыто. Кнопки убраны.")
-        time.sleep(3)
-        delete_message_safe(msg.chat.id, msg.message_id)
+@bot.message_handler(commands=['help'])
+def cmd_help(message):
+    """Команда помощи"""
+    user_id = message.from_user.id
+    
+    if not is_admin(user_id, message.chat.id):
+        bot.reply_to(message, "❌ Только для администраторов!")
+        return
+    
+    safe_delete(message.message_id, message.chat.id)
+    
+    help_text = """
+🤖 *Команды администратора:*
 
-    except Exception as e:
-        error_msg = bot.reply_to(message, f"❌ Ошибка: {e}")
-        time.sleep(3)
-        delete_message_safe(error_msg.chat.id, error_msg.message_id)
+🔹 /start - Запустить голосование (создает 2 сообщения)
+🔹 /restart - Перезапустить сообщение с результатами (удаляет старое)
+🔹 /third - Создать третье сообщение сейчас
+🔹 /help - Показать эту справку
 
-# ====== КОМАНДА ДЛЯ СОЗДАНИЯ УВЕДОМИТЕЛЬНОГО СООБЩЕНИЯ СЕЙЧАС ======
-@bot.message_handler(commands=['notify'])
-def create_notification_now(message):
-    """Создать уведомительное сообщение немедленно"""
-    handle_admin_command(message, _create_notification_now_impl)
+*Расписание:*
+📅 Голосование: ежедневно в 12:00 МСК
+📅 Третье сообщение: ежедневно в 18:00 МСК
 
-def _create_notification_now_impl(message):
-    """Реализация команды создания уведомительного сообщения"""
-    try:
-        # Создаем уведомительное сообщение без предварительного сообщения
-        create_notification_message()
+*Как голосовать:*
+✅ ДА - вы идете
+❌ НЕТ - вы не идете
+➕ +1 ГОСТЬ - добавить гостя
+➖ -1 ГОСТЬ - убрать последнего гостя
 
-        # Отправляем подтверждение и удаляем через 3 секунды
-        msg = bot.reply_to(message, "📢 Уведомительное сообщение создано!")
-        time.sleep(3)
-        delete_message_safe(msg.chat.id, msg.message_id)
-    except Exception as e:
-        error_msg = bot.reply_to(message, f"❌ Ошибка: {e}")
-        time.sleep(3)
-        delete_message_safe(error_msg.chat.id, error_msg.message_id)
+*Примечание:*
+- Гостей можно добавлять даже без выбора ДА
+- Все сообщения обновляются автоматически
+    """
+    
+    msg = bot.send_message(message.chat.id, help_text, parse_mode='Markdown')
+    time.sleep(10)
+    safe_delete(msg.message_id, message.chat.id)
 
-# ====== КОМАНДА ДЛЯ ИЗМЕНЕНИЯ ВРЕМЕНИ УВЕДОМЛЕНИЯ ======
-@bot.message_handler(commands=['set_notify_time'])
-def set_notification_time(message):
-    """Установить новое время для уведомительного сообщения (ТОЛЬКО ПО СУББОТАМ)"""
-    handle_admin_command(message, _set_notification_time_impl)
+# ====== ПЛАНИРОВЩИК ЗАДАЧ ======
 
-def _set_notification_time_impl(message):
-    """Реализация команды установки времени уведомления"""
-    try:
-        global NOTIFICATION_TIME
-        parts = message.text.split()
-        if len(parts) < 2:
-            msg = bot.reply_to(message, "❌ Используйте: /set_notify_time HH:MM")
-            time.sleep(3)
-            delete_message_safe(msg.chat.id, msg.message_id)
-            return
-
-        new_time = parts[1]
-
-        # Валидация времени
-        datetime.strptime(new_time, "%H:%M")
-
-        # Обновляем время
-        NOTIFICATION_TIME = new_time
-        schedule.clear('notification')  # Очищаем старое расписание
-        
-        # Конвертируем время в UTC
-        def msk_to_utc(time_msk):
-            hour, minute = map(int, time_msk.split(':'))
-            hour_utc = hour - 3
-            if hour_utc < 0:
-                hour_utc += 24
-            return f"{hour_utc:02d}:{minute:02d}"
-        
-        notification_time_utc = msk_to_utc(NOTIFICATION_TIME)
-
-        # Создаем новое расписание ТОЛЬКО ПО СУББОТАМ
-        def scheduled_create_notification():
-            create_notification_message()
-
-        schedule.every().saturday.at(notification_time_utc).do(scheduled_create_notification).tag('notification')
-
-        moscow_now = datetime.now(MOSCOW_TZ)
-        print(f"[{moscow_now.strftime('%H:%M:%S')}] ⏰ Время уведомления изменено на {NOTIFICATION_TIME} МСК (только по субботам)")
-
-        # Отправляем подтверждение и удаляем через 3 секунды
-        msg = bot.reply_to(message,
-                           f"✅ Время уведомительного сообщения обновлено! Теперь только по субботам в {NOTIFICATION_TIME} МСК")
-        time.sleep(3)
-        delete_message_safe(msg.chat.id, msg.message_id)
-
-    except (IndexError, ValueError):
-        msg = bot.reply_to(message, "❌ Неверный формат времени. Используйте: /set_notify_time HH:MM")
-        time.sleep(3)
-        delete_message_safe(msg.chat.id, msg.message_id)
-    except Exception as e:
-        error_msg = bot.reply_to(message, f"❌ Ошибка: {e}")
-        time.sleep(3)
-        delete_message_safe(error_msg.chat.id, error_msg.message_id)
-
-# ====== ФУНКЦИЯ ПЛАНИРОВЩИКА ======
 def run_scheduler():
-    """Запускает планировщик задач в отдельном потоке"""
+    """Запуск планировщика в отдельном потоке"""
     while True:
         schedule.run_pending()
-        time.sleep(1)  # Проверяем каждую секунду для точности
+        time.sleep(1)
 
-# ====== КОМАНДА ДЛЯ ПОЛУЧЕНИЯ ID ГРУППЫ ======
-@bot.message_handler(commands=['getid'])
-def get_group_id_command(message):
-    """Получить ID группы/чата по команде"""
-    if message.chat.type in ['group', 'supergroup']:
-        # Удаляем команду
-        delete_message_safe(message.chat.id, message.message_id)
-
-        # Отправляем ID и удаляем через 5 секунд
-        msg = bot.reply_to(message,
-                           f"📋 ID этой группы: `{message.chat.id}`\n\n"
-                           f"Скопируйте этот ID и вставьте в переменную GROUP_CHAT_ID",
-                           parse_mode='Markdown')
-        time.sleep(5)
-        delete_message_safe(msg.chat.id, msg.message_id)
-    else:
-        # Удаляем команду
-        delete_message_safe(message.chat.id, message.message_id)
-
-        # Отправляем сообщение об ошибке и удаляем через 3 секунды
-        msg = bot.reply_to(message, "❌ Эта команда работает только в группах!")
-        time.sleep(3)
-        delete_message_safe(msg.chat.id, msg.message_id)
-
-# ====== КОМАНДЫ БОТА ======
-@bot.message_handler(commands=['start'])
-def send_welcome(message):
-    """Приветственное сообщение"""
-    moscow_now = datetime.now(MOSCOW_TZ)
-    welcome_text = f"""
-    🤖 *Бот для голосования о тренировках*
+def setup_scheduler():
+    """Настройка расписания"""
+    schedule.clear()
     
-    *Новая логика:*
-    ✅ 'Да' - Я иду на тренировку
-    ❌ 'Нет' - Я не иду на тренировку
-    ➕ '+1' - Добавить гостя (можно БЕЗ выбора "Да")  <-- ИЗМЕНЕНО!
-    ➖ '-1' - Убрать гостя
-    
-    *Команды администратора:*
-    /create - Создать голосование сейчас
-    /notify - Создать уведомительное сообщение сейчас
-    /add_yes имя [username] [гости] - Добавить пользователя в список 'Да'
-    /remove имя - Удалить пользователя из списка
-    /stats - Текущая статистика
-    /list - Список всех голосовавших
-    /close - Закрыть голосование (убрать кнопки)
-    /set_time HH:MM - Установить время для автоматического голосования
-    /set_notify_time HH:MM - Установить время для уведомительного сообщения
-    /getid - Получить ID группы
-    /clear - Очистить текущие результаты голосования
-    
-    *Как работает:*
-    - ✅ Да - личное участие
-    - ❌ Нет - отказ
-    - ➕ +1 - добавить гостя (теперь МОЖНО без выбора "Да")
-    - ➖ -1 - убрать последнего добавленного гостя
-    - Гости отображаются как: "СлучайноеИмя от nickname(username)"
-    
-    *Случайные имена гостей:*
-    {', '.join(GUEST_NAMES)}
-    
-    *Текущее время (Москва):* {moscow_now.strftime('%H:%M')}
-    
-    *Автоматически:* 
-    - Бот создает голосование каждый день в {VOTING_TIME} МСК
-    - Бот создает уведомительное сообщение ТОЛЬКО ПО СУББОТАМ в {NOTIFICATION_TIME} МСК
-    """
-
-    msg = bot.reply_to(message, welcome_text, parse_mode='Markdown')
-    # Не удаляем приветственное сообщение
-
-@bot.message_handler(commands=['create'])
-def create_voting_now(message):
-    """Создать голосование немедленно"""
-    handle_admin_command(message, _create_voting_now_impl)
-
-def _create_voting_now_impl(message):
-    """Реализация команды создания голосования"""
-    try:
-        create_daily_voting()
-
-        # Отправляем подтверждение и удаляем через 3 секунды
-        msg = bot.reply_to(message, "✅ Голосование создано!")
-        time.sleep(3)
-        delete_message_safe(msg.chat.id, msg.message_id)
-    except Exception as e:
-        error_msg = bot.reply_to(message, f"❌ Ошибка: {e}")
-        time.sleep(3)
-        delete_message_safe(error_msg.chat.id, error_msg.message_id)
-
-@bot.message_handler(commands=['set_time'])
-def set_voting_time(message):
-    """Установить новое время для голосования"""
-    handle_admin_command(message, _set_voting_time_impl)
-
-def _set_voting_time_impl(message):
-    """Реализация команды установки времени голосования"""
-    try:
-        global VOTING_TIME
-        parts = message.text.split()
-        if len(parts) < 2:
-            msg = bot.reply_to(message, "❌ Используйте: /set_time HH:MM")
-            time.sleep(3)
-            delete_message_safe(msg.chat.id, msg.message_id)
-            return
-
-        new_time = parts[1]
-
-        # Валидация времени
-        datetime.strptime(new_time, "%H:%M")
-
-        # Обновляем время
-        VOTING_TIME = new_time
-        schedule.clear('daily_voting')  # Очищаем старое расписание
-
-        # Создаем новое расписание с учетом часового пояса
-        def scheduled_create_daily_voting():
-            create_daily_voting()
-
-        schedule.every().day.at(VOTING_TIME).do(scheduled_create_daily_voting).tag('daily_voting')
-
-        moscow_now = datetime.now(MOSCOW_TZ)
-        print(f"[{moscow_now.strftime('%H:%M:%S')}] ⏰ Время голосования изменено на {VOTING_TIME} МСК")
-
-        # Отправляем подтверждение и удаляем через 3 секунды
-        msg = bot.reply_to(message, f"✅ Время голосования обновлено! Новое время: {VOTING_TIME} МСК")
-        time.sleep(3)
-        delete_message_safe(msg.chat.id, msg.message_id)
-
-    except (IndexError, ValueError):
-        msg = bot.reply_to(message, "❌ Неверный формат времени. Используйте: /set_time HH:MM")
-        time.sleep(3)
-        delete_message_safe(msg.chat.id, msg.message_id)
-    except Exception as e:
-        error_msg = bot.reply_to(message, f"❌ Ошибка: {e}")
-        time.sleep(3)
-        delete_message_safe(error_msg.chat.id, error_msg.message_id)
-
-# ====== КОМАНДА ДЛЯ ОЧИСТКИ РЕЗУЛЬТАТОВ ======
-@bot.message_handler(commands=['clear'])
-def clear_voting(message):
-    """Очистить текущие результаты"""
-    handle_admin_command(message, _clear_voting_impl)
-
-def _clear_voting_impl(message):
-    """Реализация команды очистки результатов"""
-    current_voting['yes_voters'] = {}
-    current_voting['no_voters'] = {}
-    current_voting['plus_one_voters'] = {}
-    current_voting['user_cache'] = {}
-
-    # Логируем очистку
-    moscow_now = datetime.now(MOSCOW_TZ)
-    print(f"[{moscow_now.strftime('%H:%M:%S')}] 🧹 АДМИН очистил все результаты голосования")
-
-    update_voting_message()
-    update_results_message()
-    update_notification_message()
-
-    # Отправляем подтверждение и удаляем через 3 секунды
-    msg = bot.reply_to(message, "✅ Результаты голосования очищены!")
-    time.sleep(3)
-    delete_message_safe(msg.chat.id, msg.message_id)
-
-# ====== ЗАПУСК БОТА ======
-if __name__ == "__main__":
-    print("🤖 Бот запускается...")
-
-    def msk_to_utc(time_msk):
-        """Конвертирует время из МСК в UTC"""
-        hour, minute = map(int, time_msk.split(':'))
+    # Конвертация времени из МСК в UTC
+    def msk_to_utc(time_str):
+        hour, minute = map(int, time_str.split(':'))
         hour_utc = hour - 3
         if hour_utc < 0:
             hour_utc += 24
         return f"{hour_utc:02d}:{minute:02d}"
+    
+    # Планируем голосование на 12:00 МСК
+    voting_utc = msk_to_utc(VOTING_TIME)
+    schedule.every().day.at(voting_utc).do(create_voting)
+    
+    # Планируем третье сообщение на 18:00 МСК
+    third_utc = msk_to_utc(NOTIFICATION_TIME)
+    schedule.every().day.at(third_utc).do(create_third_message)
+    
+    print(f"📅 Расписание:")
+    print(f"   - Голосование: {VOTING_TIME} МСК ({voting_utc} UTC)")
+    print(f"   - 3-е сообщение: {NOTIFICATION_TIME} МСК ({third_utc} UTC)")
 
-    voting_time_utc = msk_to_utc(VOTING_TIME)
-    notification_time_utc = msk_to_utc(NOTIFICATION_TIME)
+# ====== ЗАПУСК БОТА ======
 
-    print(f"⏰ Голосование: {VOTING_TIME} МСК ({voting_time_utc} UTC)")
-    print(f"⏰ Уведомление: {NOTIFICATION_TIME} МСК ({notification_time_utc} UTC) - ТОЛЬКО ПО СУББОТАМ")
-    print(f"👑 Команды администратора доступны всем администраторам и владельцу группы")
-
-    # Автоматическая проверка при старте
+if __name__ == "__main__":
+    print("=" * 50)
+    print("🤖 БОТ ДЛЯ ГОЛОСОВАНИЯ ЗАПУСКАЕТСЯ...")
+    print("=" * 50)
+    
+    # Проверка подключения к группе
     try:
         chat = bot.get_chat(GROUP_CHAT_ID)
         print(f"✅ Подключено к группе: {chat.title}")
-    except:
-        print("⚠️  ID группы устарел. Используйте /getid в группе для получения ID")
-
-    # Очищаем все старые задачи
-    schedule.clear()
-
-    # Настраиваем ежедневное голосование в UTC (для Bothost)
-    schedule.every().day.at(voting_time_utc).do(create_daily_voting).tag('daily_voting')
-    print(f"📅 Голосование запланировано на {voting_time_utc} UTC ({VOTING_TIME} МСК)")
-
-    # Настраиваем уведомительное сообщение ТОЛЬКО ПО СУББОТАМ в UTC
-    schedule.every().saturday.at(notification_time_utc).do(create_notification_message).tag('notification')
-    print(f"📅 Уведомление запланировано на субботу {notification_time_utc} UTC ({NOTIFICATION_TIME} МСК)")
-
-    # Запускаем планировщик в отдельном потоке
+    except Exception as e:
+        print(f"⚠️ Ошибка подключения к группе: {e}")
+        print("   Проверьте GROUP_CHAT_ID и права бота")
+    
+    # Настройка расписания
+    setup_scheduler()
+    
+    # Запуск планировщика в отдельном потоке
     scheduler_thread = Thread(target=run_scheduler)
     scheduler_thread.daemon = True
     scheduler_thread.start()
-
-    print("🔄 Бот запущен. Ожидание запланированных задач...")
-    print("-" * 50)
-
-    # Запускаем бота
-    try:
-        bot.polling(none_stop=True, interval=1, timeout=30)
-    except Exception as e:
-        print(f"❌ Ошибка: {e}")
+    print("✅ Планировщик задач запущен")
+    
+    print("=" * 50)
+    print("🔄 БОТ РАБОТАЕТ. ОЖИДАНИЕ КОМАНД...")
+    print("=" * 50)
+    
+    # Запуск бота с обработкой ошибок для BotHost
+    while True:
+        try:
+            bot.polling(none_stop=True, interval=1, timeout=30)
+        except Exception as e:
+            print(f"❌ Ошибка: {e}")
+            print("🔄 Перезапуск через 10 секунд...")
+            time.sleep(10)
