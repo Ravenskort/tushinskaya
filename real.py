@@ -8,14 +8,14 @@ from telebot import types
 import pytz
 
 # ====== НАСТРОЙКИ ======
-TOKEN = "8568812025:AAHL-u8tquSPxlBW8ZEXz2wv4oi0z8R6r3U"  # токен
-GROUP_CHAT_ID = -1002990790597  # ID группы
+TOKEN = "8568812025:AAHL-u8tquSPxlBW8ZEXz2wv4oi0z8R6r3U"  # Вставьте ваш токен
+GROUP_CHAT_ID = -1003559215540  # ID вашей группы (должен начинаться с -)
 
-# Время публикации 
-VOTING_TIME = "12:00"  # Время отправки сообщения 
-NOTIFICATION_TIME = "18:00"  # Время отправки финального сообщения
+# Время публикации (24-часовой формат, указываем МСК)
+VOTING_TIME = "12:00"  # Время отправки сообщения с кнопками (по Москве)
+NOTIFICATION_TIME = "18:00"  # Время отправки финального сообщения "Жду на Тушинской" (по Москве)
 
-# Часовой пояс
+# Устанавливаем часовой пояс (Москва)
 MOSCOW_TZ = pytz.timezone('Europe/Moscow')
 
 # Список случайных имен для гостей
@@ -31,9 +31,9 @@ current_voting = {
     'results_message_id': None,  # ID сообщения с результатами
     'notification_message_id': None,  # ID финального сообщения
     'date': None,
-    'yes_voters': {},  # user_id: user_data
+    'yes_voters': {},  # user_id: user_data (основные голоса)
     'no_voters': {},  # user_id: user_data
-    'plus_one_voters': {},  # user_id: список гостей
+    'plus_one_voters': {},  # user_id: список гостей (теперь храним списки)
     'user_cache': {},  # Кэш данных о пользователях для тех, кто только добавляет гостей
 }
 
